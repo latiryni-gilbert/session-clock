@@ -31,9 +31,9 @@ export const PRESET_GROUPS: PresetGroup[] = [
     name: 'ICT killzones',
     windows: [
       { name: 'Asian', start: '20:00', end: '00:00', timeZone: 'America/New_York', days: SUN_THU, color: '#f97316' },
-      { name: 'London Open', start: '02:00', end: '05:00', timeZone: 'America/New_York', days: MON_FRI, color: '#0ea5e9' },
-      { name: 'New York AM', start: '07:00', end: '10:00', timeZone: 'America/New_York', days: MON_FRI, color: '#10b981' },
-      { name: 'London Close', start: '10:00', end: '12:00', timeZone: 'America/New_York', days: MON_FRI, color: '#ec4899' },
+      { name: 'London', start: '02:00', end: '05:00', timeZone: 'America/New_York', days: MON_FRI, color: '#0ea5e9' },
+      { name: 'New York AM', start: '08:30', end: '11:00', timeZone: 'America/New_York', days: MON_FRI, color: '#10b981' },
+      { name: 'New York PM', start: '13:30', end: '16:00', timeZone: 'America/New_York', days: MON_FRI, color: '#ec4899' },
     ],
   },
 ]
