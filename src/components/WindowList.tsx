@@ -1,7 +1,6 @@
 import { DateTime } from 'luxon'
-import { PRESET_GROUPS } from '../config/presets'
 import { formatTimeRange } from '../lib/formatTime'
-import type { TradingWindow } from '../lib/tradingWindow'
+import type { PresetGroup, TradingWindow } from '../lib/tradingWindow'
 import { sortWindowsByStatus, statusLabel, type WindowStatus } from '../lib/windowStatus'
 
 interface Props {
@@ -50,10 +49,10 @@ function WindowRow({
   )
 }
 
-export function WindowList({ now, timeZone }: Props) {
+export function WindowList({ groups, now, timeZone }: Props & { groups: PresetGroup[] }) {
   return (
     <div className="w-full max-w-2xl space-y-8">
-      {PRESET_GROUPS.map((group) => (
+      {groups.map((group) => (
         <section key={group.name}>
           <h2 className="mb-3 text-xs font-medium uppercase tracking-[0.2em] text-neutral-500">{group.name}</h2>
           <ul className="space-y-2">
