@@ -6,6 +6,15 @@ import {
   updateCustomWindow,
   type DeletedWindow,
 } from './customWindowActions'
+import {
+  loadAlertSettings,
+  removeAlert,
+  saveAlertSettings,
+  setAlertLead,
+  setSoundOn,
+  type AlertLead,
+  type AlertSettings,
+} from './alertSettings'
 import { allWindowIds, createCustomWindow, loadCustomWindows, saveCustomWindows, validateDraft, type WindowDraft } from './customWindows'
 import type { TradingWindow } from './tradingWindow'
 import { loadDisabledIds, saveDisabledIds, type DisabledIds } from './windowSettings'
@@ -15,14 +24,22 @@ interface State {
   disabled: DisabledIds
   /** True once a save to localStorage has failed (storage blocked or full). */
   saveFailed: boolean
-  /** The most recently deleted custom window, kept briefly so it can be undone. */
-  lastDeleted: DeletedWindow | null
+  /** The most recently deleted custom window (with its alert setting), kept briefly so it can be undone. */
+  lastDeleted: (DeletedWindow & { alertLead: AlertLead | null }) | null
+  alerts: AlertSettings
 }
 
 function init(): State {
   const custom = loadCustomWindows()
   // Known ids include custom windows, so a switched-off custom window stays off after a reload.
-  return { custom, disabled: loadDisabledIds(undefined, allWindowIds(custom)), saveFailed: false, lastDeleted: null }
+  const ids = allWindowIds(custom)
+  return {
+    custom,
+    disabled: loadDisabledIds(undefined, ids),
+    alerts: loadAlertSettings(undefined, ids),
+    saveFailed: false,
+    lastDeleted: null,
+  }
 }
 
 // Side effects (saving) happen in the callbacks below, not inside state updaters: updaters can
@@ -72,42 +89,70 @@ export function useWindows() {
     [state.custom],
   )
 
-  /** Deletes a custom window and its saved on/off state, and offers Undo for a few seconds. */
+  /** Deletes a custom window with its saved on/off state and alert setting, and offers Undo for a few seconds. */
   const deleteWindow = useCallback(
     (id: string) => {
       const result = deleteCustomWindow(state.custom, state.disabled, id)
       if (!result.deleted) return
-      const ok = saveCustomWindows(result.custom) && saveDisabledIds(result.disabled)
+      const alertLead = state.alerts.lead[id] ?? null
+      const alerts = removeAlert(state.alerts, id)
+      const ok = saveCustomWindows(result.custom) && saveDisabledIds(result.disabled) && saveAlertSettings(alerts)
       setState((s) => ({
         ...s,
         custom: result.custom,
         disabled: result.disabled,
-        lastDeleted: result.deleted,
+        alerts,
+        lastDeleted: { ...result.deleted!, alertLead },
         saveFailed: s.saveFailed || !ok,
       }))
     },
-    [state.custom, state.disabled],
+    [state.custom, state.disabled, state.alerts],
   )
 
-  /** Puts the last deleted window back, with its position and on/off state. */
+  /** Puts the last deleted window back, with its position, on/off state and alert setting. */
   const undoDelete = useCallback(() => {
     if (!state.lastDeleted) return
     const result = restoreCustomWindow(state.custom, state.disabled, state.lastDeleted)
-    const ok = saveCustomWindows(result.custom) && saveDisabledIds(result.disabled)
+    const { alertLead, window } = state.lastDeleted
+    const alerts = alertLead ? setAlertLead(state.alerts, window.id, alertLead) : state.alerts
+    const ok = saveCustomWindows(result.custom) && saveDisabledIds(result.disabled) && saveAlertSettings(alerts)
     setState((s) => ({
       ...s,
       custom: result.custom,
       disabled: result.disabled,
+      alerts,
       lastDeleted: null,
       saveFailed: s.saveFailed || !ok,
     }))
-  }, [state.custom, state.disabled, state.lastDeleted])
+  }, [state.custom, state.disabled, state.alerts, state.lastDeleted])
+
+  /** Sets (or, with null, turns off) a window's alert lead time. */
+  const changeAlertLead = useCallback(
+    (id: string, lead: AlertLead | null) => {
+      const alerts = setAlertLead(state.alerts, id, lead)
+      const ok = saveAlertSettings(alerts)
+      setState((s) => ({ ...s, alerts, saveFailed: s.saveFailed || !ok }))
+    },
+    [state.alerts],
+  )
+
+  const changeSoundOn = useCallback(
+    (soundOn: boolean) => {
+      const alerts = setSoundOn(state.alerts, soundOn)
+      const ok = saveAlertSettings(alerts)
+      setState((s) => ({ ...s, alerts, saveFailed: s.saveFailed || !ok }))
+    },
+    [state.alerts],
+  )
 
   return {
     custom: state.custom,
     disabled: state.disabled,
     saveFailed: state.saveFailed,
     lastDeleted: state.lastDeleted,
+    alerts: state.alerts,
+    changeAlertLead,
+    changeSoundOn,
     setDisabled,
     addCustomWindow,
     editCustomWindow,
