@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { ALERT_LEADS, getAlertLead, isAlertLead, type AlertLead, type AlertSettings } from '../lib/alertSettings'
 import { alertSound } from '../lib/alertSound'
+import {
+  areNotificationsSupported,
+  getNotificationPermission,
+  requestNotificationPermission,
+  type NotificationPermissionState,
+} from '../lib/notifications'
 import { draftFromWindow, type DeletedWindow } from '../lib/customWindowActions'
 import { CUSTOM_ID_PREFIX, emptyDraft, type WindowDraft } from '../lib/customWindows'
 import type { PresetGroup, TradingWindow } from '../lib/tradingWindow'
@@ -26,6 +32,7 @@ interface Props {
   alerts: AlertSettings
   onAlertLeadChange: (id: string, lead: AlertLead | null) => void
   onSoundChange: (soundOn: boolean) => void
+  onNotificationsChange: (on: boolean) => void
   detectedTimeZone: string
   saveFailed: boolean
 }
@@ -47,6 +54,7 @@ export function Settings({
   alerts,
   onAlertLeadChange,
   onSoundChange,
+  onNotificationsChange,
   detectedTimeZone,
   saveFailed,
 }: Props) {
@@ -57,6 +65,10 @@ export function Settings({
   const [editing, setEditing] = useState<{ id: string; draft: WindowDraft } | null>(null)
   const [confirming, setConfirming] = useState<TradingWindow | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // Whether the browser can do system notifications, and what the user has allowed. Read when the panel opens.
+  const [notifySupported, setNotifySupported] = useState(() => areNotificationsSupported())
+  const [permission, setPermission] = useState<NotificationPermissionState>(() => getNotificationPermission())
+  const [notifyNote, setNotifyNote] = useState<'denied' | 'dismissed' | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const gearRef = useRef<HTMLButtonElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
@@ -69,6 +81,7 @@ export function Settings({
     setEditing(null)
     setConfirming(null)
     setNote(null)
+    setNotifyNote(null)
   }
 
   useEffect(() => {
@@ -96,6 +109,24 @@ export function Settings({
     setConfirming(null)
   }
 
+  // Asks the browser for permission only here, from the click that turns the switch on.
+  const toggleNotifications = async () => {
+    if (alerts.notificationsOn) {
+      onNotificationsChange(false)
+      return
+    }
+    const result = await requestNotificationPermission()
+    setPermission(result)
+    if (result === 'granted') {
+      setNotifyNote(null)
+      onNotificationsChange(true)
+    } else {
+      onNotificationsChange(false)
+      setNotifyNote(result === 'denied' ? 'denied' : 'dismissed')
+    }
+  }
+  const notificationsOn = alerts.notificationsOn && permission === 'granted'
+
   const isEditing = view === 'form' && editing !== null
   const title = view === 'confirm' ? 'Delete window' : isEditing ? 'Edit window' : 'Add window'
 
@@ -107,7 +138,12 @@ export function Settings({
         aria-label="Settings"
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          // Re-read here: the user may have changed the browser's notification permission since last time.
+          setNotifySupported(areNotificationsSupported())
+          setPermission(getNotificationPermission())
+          setOpen(true)
+        }}
         className="absolute top-3 right-3 flex size-11 items-center justify-center rounded-full text-neutral-400 hover:bg-neutral-800 hover:text-white focus-visible:outline-2 focus-visible:outline-neutral-400"
       >
         <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -232,6 +268,34 @@ export function Settings({
                         }}
                       />
                     </div>
+                    {notifySupported ? (
+                      <div className="py-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p>Desktop notifications</p>
+                            <p className="text-xs text-neutral-500">
+                              When a tab is in the background, an alert also shows as a system notification.
+                            </p>
+                          </div>
+                          <Switch
+                            state={notificationsOn ? 'on' : 'off'}
+                            label="Desktop notifications"
+                            onToggle={() => void toggleNotifications()}
+                          />
+                        </div>
+                        {(notifyNote !== null || (permission === 'denied' && !notificationsOn)) && (
+                          <p role="status" className="mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+                            {notifyNote === 'dismissed'
+                              ? 'Notifications stay off until you choose Allow when your browser asks.'
+                              : 'Notifications are blocked. To allow them, open your browser’s site settings (the icon beside the address) and set Notifications to Allow, then turn this on again.'}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="py-1 text-sm text-neutral-500">
+                        Notifications aren’t available here. In-page alerts still work.
+                      </p>
+                    )}
                   </section>
                   {groups.map((group) => {
                     const state = getGroupState(disabled, group)
