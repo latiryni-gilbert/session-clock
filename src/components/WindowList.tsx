@@ -2,20 +2,24 @@ import { DateTime } from 'luxon'
 import { PRESET_GROUPS } from '../config/presets'
 import { formatTimeRange } from '../lib/formatTime'
 import type { TradingWindow } from '../lib/tradingWindow'
-import { getWindowStatus, statusLabel } from '../lib/windowStatus'
+import { sortWindowsByStatus, statusLabel, type WindowStatus } from '../lib/windowStatus'
 
 interface Props {
   now: Date
   timeZone: string
 }
 
-function WindowRow({ window, now, timeZone }: Props & { window: TradingWindow }) {
-  const status = getWindowStatus(window, now, timeZone)
+function WindowRow({
+  window,
+  status,
+  now,
+  timeZone,
+}: Props & { window: TradingWindow; status: WindowStatus }) {
   const active = status.kind === 'active'
-  const times =
-    status.kind === 'closed' && !status.start
-      ? 'Not today'
-      : formatTimeRange(status.start!, status.end!, DateTime.fromJSDate(now, { zone: timeZone }))
+  // When the label already names the day ("Opens Sun 18:00"), tag the times relative to the open instead of today.
+  const farAway = status.kind === 'upcoming' && status.opensInMs > 24 * 60 * 60 * 1000
+  const reference = farAway ? status.start : DateTime.fromJSDate(now, { zone: timeZone })
+  const times = formatTimeRange(status.start, status.end, reference)
 
   return (
     <li
@@ -36,7 +40,7 @@ function WindowRow({ window, now, timeZone }: Props & { window: TradingWindow })
       </div>
       <p
         className={`shrink-0 text-right text-sm ${
-          active ? 'font-semibold text-emerald-300' : status.kind === 'upcoming' ? 'text-sky-300' : 'text-neutral-500'
+          active ? 'font-semibold text-emerald-300' : 'text-sky-300'
         }`}
       >
         {statusLabel(status)}
@@ -52,8 +56,8 @@ export function WindowList({ now, timeZone }: Props) {
         <section key={group.name}>
           <h2 className="mb-3 text-xs font-medium uppercase tracking-[0.2em] text-neutral-500">{group.name}</h2>
           <ul className="space-y-2">
-            {group.windows.map((w) => (
-              <WindowRow key={w.id} window={w} now={now} timeZone={timeZone} />
+            {sortWindowsByStatus(group.windows, now, timeZone).map(({ window, status }) => (
+              <WindowRow key={window.id} window={window} status={status} now={now} timeZone={timeZone} />
             ))}
           </ul>
         </section>
