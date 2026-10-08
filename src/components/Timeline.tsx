@@ -1,6 +1,6 @@
 import { PRESET_GROUPS } from '../config/presets'
 import { getHourTicks, getNowFraction, getTimelineSegments } from '../lib/timeline'
-import { sortWindowsByStatus } from '../lib/windowStatus'
+import { getWindowStatus } from '../lib/windowStatus'
 
 interface Props {
   now: Date
@@ -9,42 +9,51 @@ interface Props {
 
 const pct = (fraction: number) => `${fraction * 100}%`
 
+// Width of the short-label column (w-10 + mr-2 = 3rem), used to line up the overlay and hour labels.
+const LABEL_COLUMN = '3rem'
+
 export function Timeline({ now, timeZone }: Props) {
-  // Same order as the list below: groups in order, active windows first within each.
-  const rows = PRESET_GROUPS.flatMap((group) => sortWindowsByStatus(group.windows, now, timeZone))
   const ticks = getHourTicks(now, timeZone)
 
   return (
     <section aria-label="Today's timeline" className="w-full max-w-2xl">
       <div className="relative">
-        <div className="space-y-1.5">
-          {rows.map(({ window, status }) => {
-            const active = status.kind === 'active'
-            return (
-              <div key={window.id} className="flex items-center" title={window.name}>
-                <span className="mr-3 hidden w-28 shrink-0 truncate text-xs text-neutral-400 sm:block">
-                  {window.name}
-                </span>
-                <div className="relative h-3 flex-1 overflow-hidden rounded-sm bg-neutral-900">
-                  {getTimelineSegments(window, now, timeZone).map((seg) => (
-                    <div
-                      key={seg.start}
-                      className={`absolute inset-y-0 min-w-0.5 rounded-sm ${active ? 'opacity-100' : 'opacity-30'}`}
-                      style={{
-                        left: pct(seg.start),
-                        width: pct(seg.end - seg.start),
-                        backgroundColor: window.color,
-                      }}
-                    />
-                  ))}
-                </div>
+        {/* Rows stay in fixed preset order so bars don't jump as statuses change; only the list below re-sorts. */}
+        <div className="space-y-3">
+          {PRESET_GROUPS.map((group) => (
+            <div key={group.name}>
+              <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500">
+                {group.shortName}
+              </h3>
+              <div className="space-y-1.5">
+                {group.windows.map((window) => {
+                  const active = getWindowStatus(window, now, timeZone).kind === 'active'
+                  return (
+                    <div key={window.id} className="flex items-center" title={window.name}>
+                      <span className="mr-2 w-10 shrink-0 text-xs text-neutral-400">{window.shortName}</span>
+                      <div className="relative h-3 flex-1 overflow-hidden rounded-sm bg-neutral-900">
+                        {getTimelineSegments(window, now, timeZone).map((seg) => (
+                          <div
+                            key={seg.start}
+                            className={`absolute inset-y-0 min-w-0.5 rounded-sm ${active ? 'opacity-100' : 'opacity-30'}`}
+                            style={{
+                              left: pct(seg.start),
+                              width: pct(seg.end - seg.start),
+                              backgroundColor: window.color,
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
-            )
-          })}
+            </div>
+          ))}
         </div>
 
-        {/* Overlay aligned with the bar tracks (skips the name column on wider screens). */}
-        <div className="pointer-events-none absolute inset-y-0 right-0 left-0 sm:left-[7.75rem]">
+        {/* Overlay aligned with the bar tracks (skips the label column). */}
+        <div className="pointer-events-none absolute inset-y-0 right-0" style={{ left: LABEL_COLUMN }}>
           {ticks.map((tick) => (
             <div
               key={tick.label}
@@ -60,7 +69,7 @@ export function Timeline({ now, timeZone }: Props) {
         </div>
       </div>
 
-      <div className="relative mt-2 h-4 sm:ml-[7.75rem]" aria-hidden>
+      <div className="relative mt-2 h-4" style={{ marginLeft: LABEL_COLUMN }} aria-hidden>
         {ticks.map((tick) => (
           <span
             key={tick.label}

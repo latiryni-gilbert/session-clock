@@ -13,7 +13,16 @@ describe('presets', () => {
     expect(duplicates).toEqual([])
   })
 
+  it('gives every group and window a short label, and none repeats within a group', () => {
+    for (const g of PRESET_GROUPS) {
+      expect(g.shortName.trim()).not.toBe('')
+      const shorts = g.windows.map((w) => w.shortName)
+      expect(new Set(shorts).size).toBe(shorts.length)
+    }
+  })
+
   it.each(windows.map((w) => [w.name, w] as const))('%s is well-formed', (_n, w) => {
+    expect(w.shortName.trim().length).toBeGreaterThan(0)
     expect(w.start).toMatch(HH_MM)
     expect(w.end).toMatch(HH_MM)
     expect(IANAZone.isValidZone(w.timeZone)).toBe(true)

@@ -8,6 +8,8 @@ export interface TradingWindow {
   /** Unique, stable, readable identifier, e.g. "forex-london". Names can repeat across groups; ids can't. */
   id: string
   name: string
+  /** Compact label for tight spaces such as the timeline, e.g. "LDN". Needn't be unique across groups. */
+  shortName: string
   /** Wall-clock start in the home time zone. */
   start: TimeOfDay
   /**
@@ -28,5 +30,7 @@ export interface TradingWindow {
 
 export interface PresetGroup {
   name: string
+  /** Compact label for tight spaces, e.g. "Forex". */
+  shortName: string
   windows: TradingWindow[]
 }
