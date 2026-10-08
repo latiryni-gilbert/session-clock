@@ -11,6 +11,7 @@ import {
   removeAlert,
   saveAlertSettings,
   setAlertLead,
+  setNotificationsOn,
   setSoundOn,
   type AlertLead,
   type AlertSettings,
@@ -145,6 +146,15 @@ export function useWindows() {
     [state.alerts],
   )
 
+  const changeNotificationsOn = useCallback(
+    (on: boolean) => {
+      const alerts = setNotificationsOn(state.alerts, on)
+      const ok = saveAlertSettings(alerts)
+      setState((s) => ({ ...s, alerts, saveFailed: s.saveFailed || !ok }))
+    },
+    [state.alerts],
+  )
+
   return {
     custom: state.custom,
     disabled: state.disabled,
@@ -153,6 +163,7 @@ export function useWindows() {
     alerts: state.alerts,
     changeAlertLead,
     changeSoundOn,
+    changeNotificationsOn,
     setDisabled,
     addCustomWindow,
     editCustomWindow,

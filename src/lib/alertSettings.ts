@@ -9,11 +9,13 @@ export interface AlertSettings {
   /** Window id -> lead time. Windows not listed have alerts off. */
   lead: Readonly<Record<string, AlertLead>>
   soundOn: boolean
+  /** Send a system notification when an alert fires while the page is hidden. Needs browser permission. */
+  notificationsOn: boolean
 }
 
 export const ALERTS_STORAGE_KEY = 'session-clock:alerts'
 
-export const DEFAULT_ALERT_SETTINGS: AlertSettings = { lead: {}, soundOn: true }
+export const DEFAULT_ALERT_SETTINGS: AlertSettings = { lead: {}, soundOn: true, notificationsOn: false }
 
 const PRESET_IDS = PRESET_GROUPS.flatMap((g) => g.windows.map((w) => w.id))
 
@@ -40,8 +42,12 @@ export function setSoundOn(settings: AlertSettings, soundOn: boolean): AlertSett
   return { ...settings, soundOn }
 }
 
+export function setNotificationsOn(settings: AlertSettings, notificationsOn: boolean): AlertSettings {
+  return { ...settings, notificationsOn }
+}
+
 /**
- * Reads saved alert settings. Falls back to the defaults (all alerts off, sound on) if storage
+ * Reads saved alert settings. Falls back to the defaults (all alerts off, sound on, notifications off) if storage
  * is unavailable, throws, or holds anything unexpected. Entries with an unknown window id or an
  * unsupported lead time are dropped.
  */
@@ -52,7 +58,7 @@ export function loadAlertSettings(
   try {
     const raw = storage?.getItem(ALERTS_STORAGE_KEY)
     if (!raw) return DEFAULT_ALERT_SETTINGS
-    const parsed = JSON.parse(raw) as { lead?: unknown; sound?: unknown } | null
+    const parsed = JSON.parse(raw) as { lead?: unknown; sound?: unknown; notify?: unknown } | null
     const known = new Set(knownIds)
     const lead: Record<string, AlertLead> = {}
     if (parsed && typeof parsed.lead === 'object' && parsed.lead !== null && !Array.isArray(parsed.lead)) {
@@ -60,7 +66,11 @@ export function loadAlertSettings(
         if (known.has(id) && isAlertLead(value)) lead[id] = value
       }
     }
-    return { lead, soundOn: typeof parsed?.sound === 'boolean' ? parsed.sound : true }
+    return {
+      lead,
+      soundOn: typeof parsed?.sound === 'boolean' ? parsed.sound : true,
+      notificationsOn: parsed?.notify === true,
+    }
   } catch {
     return DEFAULT_ALERT_SETTINGS
   }
@@ -70,7 +80,7 @@ export function loadAlertSettings(
 export function saveAlertSettings(settings: AlertSettings, storage: StorageLike | null = getStorage()): boolean {
   try {
     if (!storage) return false
-    storage.setItem(ALERTS_STORAGE_KEY, JSON.stringify({ lead: settings.lead, sound: settings.soundOn }))
+    storage.setItem(ALERTS_STORAGE_KEY, JSON.stringify({ lead: settings.lead, sound: settings.soundOn, notify: settings.notificationsOn }))
     return true
   } catch {
     return false

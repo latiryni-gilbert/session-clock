@@ -26,6 +26,7 @@ function App() {
     undoDelete,
     changeAlertLead,
     changeSoundOn,
+    changeNotificationsOn,
   } = useWindows()
   const allGroups = buildGroups(custom)
   const groups = applySettings(allGroups, disabled)
@@ -46,6 +47,7 @@ function App() {
         alerts={alerts}
         onAlertLeadChange={changeAlertLead}
         onSoundChange={changeSoundOn}
+        onNotificationsChange={changeNotificationsOn}
         detectedTimeZone={timeZone}
         saveFailed={saveFailed}
       />

@@ -8,6 +8,7 @@ import {
   removeAlert,
   saveAlertSettings,
   setAlertLead,
+  setNotificationsOn,
   setSoundOn,
 } from './alertSettings'
 import type { StorageLike } from './windowSettings'
@@ -27,9 +28,9 @@ const broken: StorageLike = {
 const stored = (value: unknown) => fakeStorage({ [ALERTS_STORAGE_KEY]: JSON.stringify(value) })
 
 describe('defaults', () => {
-  it('offers Off plus 5, 15 and 30 minutes, with every alert off and sound on by default', () => {
+  it('offers Off plus 5, 15 and 30 minutes, with every alert off, sound on and notifications off by default', () => {
     expect([...ALERT_LEADS]).toEqual([5, 15, 30])
-    expect(DEFAULT_ALERT_SETTINGS).toEqual({ lead: {}, soundOn: true })
+    expect(DEFAULT_ALERT_SETTINGS).toEqual({ lead: {}, soundOn: true, notificationsOn: false })
     expect(loadAlertSettings(fakeStorage())).toEqual(DEFAULT_ALERT_SETTINGS)
   })
 })
@@ -54,15 +55,18 @@ describe('changing settings', () => {
 
   it('toggles sound without touching the leads', () => {
     const s = setAlertLead(DEFAULT_ALERT_SETTINGS, 'forex-london', 15)
-    expect(setSoundOn(s, false)).toEqual({ lead: { 'forex-london': 15 }, soundOn: false })
+    expect(setSoundOn(s, false)).toEqual({ lead: { 'forex-london': 15 }, soundOn: false, notificationsOn: false })
+    expect(setNotificationsOn(s, true)).toEqual({ lead: { 'forex-london': 15 }, soundOn: true, notificationsOn: true })
+    expect(DEFAULT_ALERT_SETTINGS.notificationsOn).toBe(false) // not mutated
   })
 })
 
 describe('loading', () => {
   it('reads saved settings', () => {
-    expect(loadAlertSettings(stored({ lead: { 'forex-london': 15, 'ict-asian': 5 }, sound: false }))).toEqual({
+    expect(loadAlertSettings(stored({ lead: { 'forex-london': 15, 'ict-asian': 5 }, sound: false, notify: true }))).toEqual({
       lead: { 'forex-london': 15, 'ict-asian': 5 },
       soundOn: false,
+      notificationsOn: true,
     })
   })
 
@@ -75,6 +79,14 @@ describe('loading', () => {
     const s = stored({ lead: { 'custom-x-1': 30 } })
     expect(loadAlertSettings(s).lead).toEqual({})
     expect(loadAlertSettings(s, ['custom-x-1']).lead).toEqual({ 'custom-x-1': 30 })
+  })
+
+  it('keeps notifications off unless exactly true is saved', () => {
+    expect(loadAlertSettings(stored({ lead: {} })).notificationsOn).toBe(false)
+    for (const bad of ['yes', 1, null, 'true', {}]) {
+      expect(loadAlertSettings(stored({ lead: {}, notify: bad })).notificationsOn).toBe(false)
+    }
+    expect(loadAlertSettings(stored({ lead: {}, notify: true })).notificationsOn).toBe(true)
   })
 
   it('defaults sound to on unless a boolean is saved', () => {
@@ -94,7 +106,7 @@ describe('loading', () => {
 describe('saving', () => {
   it('round-trips', () => {
     const s = fakeStorage()
-    const settings = setSoundOn(setAlertLead(DEFAULT_ALERT_SETTINGS, 'forex-london', 30), false)
+    const settings = setNotificationsOn(setSoundOn(setAlertLead(DEFAULT_ALERT_SETTINGS, 'forex-london', 30), false), true)
     expect(saveAlertSettings(settings, s)).toBe(true)
     expect(loadAlertSettings(s)).toEqual(settings)
   })
