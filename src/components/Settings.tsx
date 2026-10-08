@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { ALERT_LEADS, getAlertLead, isAlertLead, type AlertLead, type AlertSettings } from '../lib/alertSettings'
+import { alertSound } from '../lib/alertSound'
 import { draftFromWindow, type DeletedWindow } from '../lib/customWindowActions'
 import { CUSTOM_ID_PREFIX, emptyDraft, type WindowDraft } from '../lib/customWindows'
 import type { PresetGroup, TradingWindow } from '../lib/tradingWindow'
@@ -21,6 +23,9 @@ interface Props {
   onDeleteWindow: (id: string) => void
   onUndoDelete: () => void
   lastDeleted: DeletedWindow | null
+  alerts: AlertSettings
+  onAlertLeadChange: (id: string, lead: AlertLead | null) => void
+  onSoundChange: (soundOn: boolean) => void
   detectedTimeZone: string
   saveFailed: boolean
 }
@@ -39,6 +44,9 @@ export function Settings({
   onDeleteWindow,
   onUndoDelete,
   lastDeleted,
+  alerts,
+  onAlertLeadChange,
+  onSoundChange,
   detectedTimeZone,
   saveFailed,
 }: Props) {
@@ -136,7 +144,7 @@ export function Settings({
                 </button>
               ) : (
                 <h2 id="settings-title" className="font-medium">
-                  Show windows
+                  Settings
                 </h2>
               )}
               <button ref={closeRef} type="button" aria-label="Close settings" onClick={reset} className={iconButton}>
@@ -201,6 +209,30 @@ export function Settings({
                       </p>
                     )
                   )}
+                  <section>
+                    <h3 className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">Alerts</h3>
+                    <div className="mt-1 flex items-center justify-between gap-3 py-1">
+                      <div className="min-w-0">
+                        <p>Alert sound</p>
+                        <p className="text-xs text-neutral-500">
+                          A quiet chime with each alert. Browsers only allow sound once you have clicked or tapped the page.
+                        </p>
+                      </div>
+                      <Switch
+                        state={alerts.soundOn ? 'on' : 'off'}
+                        label="Alert sound"
+                        onToggle={() => {
+                          const next = !alerts.soundOn
+                          onSoundChange(next)
+                          if (next) {
+                            // This click counts as the gesture browsers require, so preview the chime.
+                            alertSound.unlock()
+                            void alertSound.play()
+                          }
+                        }}
+                      />
+                    </div>
+                  </section>
                   {groups.map((group) => {
                     const state = getGroupState(disabled, group)
                     return (
@@ -219,7 +251,8 @@ export function Settings({
                             const on = isWindowEnabled(disabled, w.id)
                             const custom = w.id.startsWith(CUSTOM_ID_PREFIX)
                             return (
-                              <li key={w.id} className="flex min-h-11 items-center gap-2 py-1 pl-1">
+                              <li key={w.id} className="py-1 pl-1">
+                              <div className="flex min-h-11 items-center gap-2">
                                 <span aria-hidden className="mr-1 size-3 shrink-0 rounded-full" style={{ backgroundColor: w.color }} />
                                 <span className={`min-w-0 flex-1 truncate ${on ? 'text-neutral-100' : 'text-neutral-500'}`}>
                                   {w.name}
@@ -267,6 +300,29 @@ export function Settings({
                                   label={`Show ${group.name} ${w.name}`}
                                   onToggle={() => onChange(setWindowEnabled(disabled, w.id, !on))}
                                 />
+                              </div>
+                                <div className="flex items-center gap-2 pb-1 pl-6">
+                                  <label htmlFor={`alert-${w.id}`} className="text-xs text-neutral-500">
+                                    Alert
+                                  </label>
+                                  <select
+                                    id={`alert-${w.id}`}
+                                    aria-label={`Alert for ${group.name} ${w.name}`}
+                                    value={getAlertLead(alerts, w.id) ?? 'off'}
+                                    onChange={(e) => {
+                                      const v = Number(e.target.value)
+                                      onAlertLeadChange(w.id, isAlertLead(v) ? v : null)
+                                    }}
+                                    className="h-9 rounded-md border border-neutral-700 bg-neutral-950 px-2 text-sm text-neutral-200 [color-scheme:dark] focus-visible:outline-2 focus-visible:outline-neutral-400"
+                                  >
+                                    <option value="off">Off</option>
+                                    {ALERT_LEADS.map((m) => (
+                                      <option key={m} value={m}>
+                                        {m} minutes before
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
                               </li>
                             )
                           })}
