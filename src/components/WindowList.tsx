@@ -23,7 +23,7 @@ function WindowRow({
 
   return (
     <li
-      className={`flex items-center gap-3 rounded-lg border px-4 py-3 ${
+      className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 rounded-lg border px-4 py-3 ${
         active
           ? 'border-emerald-500/60 bg-emerald-500/10'
           : 'border-neutral-800 bg-neutral-900/40'
@@ -31,19 +31,20 @@ function WindowRow({
     >
       <span
         aria-hidden
-        className={`size-3 shrink-0 rounded-full ${active ? 'ring-4 ring-emerald-500/30' : 'opacity-60'}`}
+        className={`row-span-2 size-3 rounded-full ${active ? 'ring-4 ring-emerald-500/30' : 'opacity-60'}`}
         style={{ backgroundColor: window.color }}
       />
-      <div className="min-w-0 flex-1">
-        <p className={`truncate font-medium ${active ? 'text-white' : 'text-neutral-200'}`}>{window.name}</p>
-        <p className="font-mono text-sm tabular-nums text-neutral-500">{times}</p>
-      </div>
+      <p className={`truncate font-medium ${active ? 'text-white' : 'text-neutral-200'}`}>{window.name}</p>
       <p
-        className={`shrink-0 text-right text-sm ${
+        className={`whitespace-nowrap text-right text-sm ${
           active ? 'font-semibold text-emerald-300' : 'text-sky-300'
         }`}
       >
         {statusLabel(status)}
+      </p>
+      {/* Spans the name and status columns so the range never wraps, even on phones. */}
+      <p className="col-span-2 whitespace-nowrap font-mono text-xs tabular-nums text-neutral-500 sm:text-sm">
+        {times}
       </p>
     </li>
   )
