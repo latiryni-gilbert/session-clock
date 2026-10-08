@@ -3,6 +3,7 @@ import {
   areNotificationsSupported,
   decideAlertDelivery,
   getNotificationPermission,
+  hasNotificationFailed,
   requestNotificationPermission,
   showAlertNotification,
   type DeliveryInput,
@@ -13,7 +14,7 @@ import {
 
 function fakeEnv(permission = 'default', opts: { secure?: boolean; requestResult?: string; legacyCallback?: boolean; requestThrows?: boolean; ctorThrows?: boolean } = {}) {
   const shown: { title: string; options?: { body?: string; tag?: string }; instance: NotificationLike & { closed: number } }[] = []
-  const calls = { requests: 0, focus: 0 }
+  const calls = { requests: 0, focus: 0, constructed: 0 }
   class N {
     static permission = permission
     static requestPermission(callback?: (p: string) => void) {
@@ -30,6 +31,7 @@ function fakeEnv(permission = 'default', opts: { secure?: boolean; requestResult
     onclick: ((e: unknown) => void) | null = null
     closed = 0
     constructor(title: string, options?: { body?: string; tag?: string }) {
+      calls.constructed++
       if (opts.ctorThrows) throw new TypeError('Illegal constructor')
       shown.push({ title, options, instance: this })
     }
@@ -173,5 +175,65 @@ describe('showAlertNotification', () => {
   })
   it('returns false instead of throwing when the browser refuses (e.g. Chrome on Android)', () => {
     expect(showAlertNotification('x', 'k', fakeEnv('granted', { ctorThrows: true }).env)).toBe(false)
+  })
+})
+
+describe('fallback when the browser refuses to create a notification (Chrome on Android)', () => {
+  it('does not throw, reports failure, and marks notifications unavailable for the session', () => {
+    const { env } = fakeEnv('granted', { ctorThrows: true })
+    expect(areNotificationsSupported(env)).toBe(true) // the API exists, so it looks usable at first
+    expect(hasNotificationFailed(env)).toBe(false)
+
+    expect(() => showAlertNotification('London opens in 15 minutes', 'k', env)).not.toThrow()
+    expect(showAlertNotification('London opens in 15 minutes', 'k2', env)).toBe(false)
+
+    expect(hasNotificationFailed(env)).toBe(true)
+    expect(areNotificationsSupported(env)).toBe(false) // so the settings switch is hidden, with the "not available" note
+    expect(getNotificationPermission(env)).toBe('denied')
+  })
+
+  it('tries only once: after the first failure it does not construct another notification', () => {
+    const { env, calls } = fakeEnv('granted', { ctorThrows: true })
+    showAlertNotification('a', 'k1', env)
+    showAlertNotification('b', 'k2', env)
+    showAlertNotification('c', 'k3', env)
+    expect(calls.constructed).toBe(1)
+  })
+
+  it('leaves the in-page banner as the delivery once notifications are unavailable', () => {
+    const { env } = fakeEnv('granted', { ctorThrows: true })
+    const before = decideAlertDelivery({
+      pageVisible: false,
+      notificationsEnabled: true,
+      supported: areNotificationsSupported(env),
+      permission: getNotificationPermission(env),
+    })
+    expect(before).toEqual({ banner: true, notification: true }) // the first attempt is made...
+    showAlertNotification('x', 'k', env) // ...and fails
+    const after = decideAlertDelivery({
+      pageVisible: false,
+      notificationsEnabled: true,
+      supported: areNotificationsSupported(env),
+      permission: getNotificationPermission(env),
+    })
+    expect(after).toEqual({ banner: true, notification: false })
+  })
+
+  it('only affects the environment where it failed', () => {
+    const broken = fakeEnv('granted', { ctorThrows: true }).env
+    const fine = fakeEnv('granted')
+    showAlertNotification('x', 'k', broken)
+    expect(areNotificationsSupported(fine.env)).toBe(true)
+    expect(showAlertNotification('y', 'k', fine.env)).toBe(true)
+    expect(fine.shown).toHaveLength(1)
+  })
+
+  it('a missing permission is not a failure, so the switch stays available', () => {
+    for (const p of ['default', 'denied']) {
+      const { env } = fakeEnv(p)
+      expect(showAlertNotification('x', 'k', env)).toBe(false)
+      expect(hasNotificationFailed(env)).toBe(false)
+      expect(areNotificationsSupported(env)).toBe(true)
+    }
   })
 })

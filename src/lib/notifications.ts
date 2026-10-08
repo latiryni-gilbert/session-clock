@@ -16,6 +16,19 @@ export interface NotificationEnv {
   focus?: () => void
 }
 
+/**
+ * Environments in which creating a notification has thrown (Chrome on Android exposes the API but
+ * only allows notifications from a service worker). Keyed by the environment object, so for the real
+ * browser (always `window`) it lasts for the rest of the session, and a fake environment in a test
+ * starts clean.
+ */
+const failedEnvs = new WeakSet<object>()
+
+/** True once showing a notification has failed here; notifications are then treated as unavailable. */
+export function hasNotificationFailed(env: NotificationEnv = browser()): boolean {
+  return failedEnvs.has(env)
+}
+
 const browser = (): NotificationEnv => (typeof window === 'undefined' ? {} : (window as unknown as NotificationEnv))
 
 const asPermission = (value: unknown): NotificationPermissionState =>
@@ -23,11 +36,12 @@ const asPermission = (value: unknown): NotificationPermissionState =>
 
 /**
  * Whether this browser can show system notifications at all. iPhone Safari outside a Home Screen
- * app has no Notification API, and notifications need a secure (https or localhost) page.
+ * app has no Notification API, notifications need a secure (https or localhost) page, and in a
+ * browser where showing one has already failed (Chrome on Android) they count as unavailable.
  */
 export function areNotificationsSupported(env: NotificationEnv = browser()): boolean {
   try {
-    return typeof env.Notification === 'function' && env.isSecureContext !== false
+    return typeof env.Notification === 'function' && env.isSecureContext !== false && !failedEnvs.has(env)
   } catch {
     return false
   }
@@ -65,7 +79,9 @@ export async function requestNotificationPermission(env: NotificationEnv = brows
 /**
  * Shows a system notification. Clicking it brings this tab to the front. `tag` makes a repeat of
  * the same alert replace the earlier notification instead of stacking. Returns false (never throws)
- * if it couldn't be shown, e.g. Chrome on Android only allows notifications from a service worker.
+ * if it couldn't be shown. If creating it throws, e.g. Chrome on Android, which only allows
+ * notifications from a service worker, notifications are marked unavailable for the rest of the
+ * session; the caller falls back to the in-page banner.
  */
 export function showAlertNotification(text: string, tag: string, env: NotificationEnv = browser()): boolean {
   try {
@@ -85,6 +101,7 @@ export function showAlertNotification(text: string, tag: string, env: Notificati
     }
     return true
   } catch {
+    failedEnvs.add(env)
     return false
   }
 }
