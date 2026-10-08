@@ -10,8 +10,8 @@ interface Props {
 
 const pct = (fraction: number) => `${fraction * 100}%`
 
-// Width of the short-label column (w-10 + mr-2 = 3rem), used to line up the overlay and hour labels.
-const LABEL_COLUMN = '3rem'
+// Width of the short-label column (w-14 + mr-2 = 4rem), used to line up the overlay and hour labels.
+const LABEL_COLUMN = '4rem'
 
 export function Timeline({ groups, now, timeZone }: Props) {
   const ticks = getHourTicks(now, timeZone)
@@ -31,7 +31,7 @@ export function Timeline({ groups, now, timeZone }: Props) {
                   const active = getWindowStatus(window, now, timeZone).kind === 'active'
                   return (
                     <div key={window.id} className="flex items-center" title={window.name}>
-                      <span className="mr-2 w-10 shrink-0 text-xs text-neutral-400">{window.shortName}</span>
+                      <span className="mr-2 w-14 shrink-0 truncate text-xs text-neutral-400">{window.shortName}</span>
                       <div className="relative h-3 flex-1 overflow-hidden rounded-sm bg-neutral-900">
                         {getTimelineSegments(window, now, timeZone).map((seg) => (
                           <div
