@@ -1,22 +1,30 @@
 import { Settings } from './components/Settings'
 import { Timeline } from './components/Timeline'
 import { WindowList } from './components/WindowList'
-import { PRESET_GROUPS } from './config/presets'
+import { buildGroups } from './lib/customWindows'
 import { formatClock, getLocalTimeZone } from './lib/formatTime'
 import { useNow } from './lib/useNow'
-import { useWindowSettings } from './lib/useWindowSettings'
+import { useWindows } from './lib/useWindows'
 import { applySettings } from './lib/windowSettings'
 
 const timeZone = getLocalTimeZone()
 
 function App() {
   const now = useNow()
-  const { disabled, update, saveFailed } = useWindowSettings()
-  const groups = applySettings(PRESET_GROUPS, disabled)
+  const { custom, disabled, saveFailed, setDisabled, addCustomWindow } = useWindows()
+  const allGroups = buildGroups(custom)
+  const groups = applySettings(allGroups, disabled)
 
   return (
     <main className="relative flex min-h-screen flex-col items-center gap-12 px-4 py-12 sm:py-16">
-      <Settings disabled={disabled} onChange={update} saveFailed={saveFailed} />
+      <Settings
+        groups={allGroups}
+        disabled={disabled}
+        onChange={setDisabled}
+        onAddWindow={addCustomWindow}
+        detectedTimeZone={timeZone}
+        saveFailed={saveFailed}
+      />
       <header className="flex flex-col items-center gap-3 text-center">
         <h1 className="text-sm font-medium uppercase tracking-[0.3em] text-neutral-400">
           Session Clock
