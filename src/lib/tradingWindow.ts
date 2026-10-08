@@ -5,6 +5,8 @@ export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7
 export type TimeOfDay = string
 
 export interface TradingWindow {
+  /** Unique, stable, readable identifier, e.g. "forex-london". Names can repeat across groups; ids can't. */
+  id: string
   name: string
   /** Wall-clock start in the home time zone. */
   start: TimeOfDay
