@@ -1,16 +1,19 @@
 import { DateTime } from 'luxon'
 import type { AlertLead } from './alertSettings'
 import { getWindowOccurrence } from './convertWindow'
+import { formatDuration } from './formatTime'
 import type { PresetGroup } from './tradingWindow'
 import { getStorage, type StorageLike } from './windowSettings'
 
 /**
- * An alert is due from its alert time until this long after it (or until the window opens, if
- * sooner). The slack lets a throttled background tab still catch it, while a page opened long
- * after the alert time stays quiet.
+ * When the page first loads, alerts whose time passed up to this long ago still count as due, so
+ * opening the page a moment late doesn't miss one. (A refresh during the alert minute is kept
+ * from repeating an alert by the fired record.)
  */
-export const ALERT_GRACE_MS = 2 * 60_000
-/** A banner disappears on its own this long after its window opens. */
+export const ALERT_LOOKBACK_MS = 2 * 60_000
+/** A catch-up alert older than this plays no sound. */
+export const SOUND_MAX_AGE_MS = 60_000
+/** A banner disappears this long (visible time) after its window opens. */
 export const BANNER_LINGER_MS = 60_000
 export const FIRED_STORAGE_KEY = 'session-clock:alerts-fired'
 
@@ -21,8 +24,13 @@ export interface DueAlert {
   /** Readable name, qualified by group when two windows share a name ("Forex London"). */
   label: string
   color: string
+  /** When the alert time arrived (open minus the lead time). */
+  alertAtMs: number
   openAtMs: number
+  endAtMs: number
   leadMinutes: number
+  /** When the banner was first seen after its window opened; it lingers for BANNER_LINGER_MS from then. */
+  openSeenAtMs?: number
 }
 
 export const alertKey = (windowId: string, openAtMs: number) => `${windowId}@${openAtMs}`
@@ -39,21 +47,29 @@ export function windowLabels(groups: readonly PresetGroup[]): Map<string, string
 }
 
 /**
- * Which alerts should fire right now.
+ * Which alerts should be shown now.
  *
- * For every window with an alert lead time, looks at its occurrences that open today or
- * tomorrow in its home zone (so an alert time before midnight for an open just after it is
- * found, and so is an overnight window's next start). An occurrence is due when
- * `open - lead <= now < min(open - lead + grace, open)` and it is not in `fired`.
- * Works on instants, so it doesn't depend on the display zone.
+ * `since` is when alerts were last checked (when the page first loads, a little before now, see
+ * `ALERT_LOOKBACK_MS`). An occurrence is due if its alert time (open minus the lead time) fell in
+ * `(since, now]` and it hasn't ended yet, and it is not in `fired`. Each alert time falls in exactly
+ * one check interval, so ordinary once-a-second checks alert right on time, and a check after a
+ * long pause (phone locked, tab in the background) catches up on everything that came due in between:
+ * - not yet open: still shown, and its text counts down from now;
+ * - open and still running: shown as "opened N minutes ago";
+ * - already ended: skipped.
+ *
+ * Looks at occurrences that started up to two days ago (overnight windows still running) through
+ * tomorrow, in each window's home zone. Works on instants, so it doesn't depend on the display zone.
  */
 export function getDueAlerts(
   groups: readonly PresetGroup[],
   leads: Readonly<Record<string, AlertLead>>,
   now: Date,
   fired: ReadonlyMap<string, number>,
+  since: Date,
 ): DueAlert[] {
   const nowMs = now.getTime()
+  const sinceMs = since.getTime()
   const labels = windowLabels(groups)
   const due: DueAlert[] = []
 
@@ -62,31 +78,74 @@ export function getDueAlerts(
       const lead = leads[window.id]
       if (!lead) continue
       const nowHome = DateTime.fromJSDate(now, { zone: window.timeZone })
-      for (const offset of [0, 1]) {
+      for (const offset of [-2, -1, 0, 1]) {
         const occ = getWindowOccurrence(window, nowHome.plus({ days: offset }).toISODate()!, 'UTC')
         if (!occ) continue
         const openAtMs = occ.start.toMillis()
-        const alertAt = openAtMs - lead * 60_000
-        if (nowMs < alertAt || nowMs >= Math.min(alertAt + ALERT_GRACE_MS, openAtMs)) continue
+        const endAtMs = occ.end.toMillis()
+        const alertAtMs = openAtMs - lead * 60_000
+        if (alertAtMs <= sinceMs || alertAtMs > nowMs || nowMs >= endAtMs) continue
         const key = alertKey(window.id, openAtMs)
         if (fired.has(key)) continue
-        due.push({ key, windowId: window.id, label: labels.get(window.id) ?? window.name, color: window.color, openAtMs, leadMinutes: lead })
+        due.push({
+          key,
+          windowId: window.id,
+          label: labels.get(window.id) ?? window.name,
+          color: window.color,
+          alertAtMs,
+          openAtMs,
+          endAtMs,
+          leadMinutes: lead,
+        })
       }
     }
   }
   return due.sort((a, b) => a.openAtMs - b.openAtMs || a.label.localeCompare(b.label))
 }
 
-/** "London opens in 15 minutes", counting down as time passes, then "London is now open". */
-export function bannerMessage(alert: DueAlert, now: Date): string {
-  const msLeft = alert.openAtMs - now.getTime()
-  if (msLeft <= 0) return `${alert.label} is now open`
-  const minutes = Math.ceil(msLeft / 60_000)
-  return `${alert.label} opens in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`
+/** Whether an alert is recent enough to play a sound (a late catch-up alert stays silent). */
+export function isFreshAlert(alert: DueAlert, now: Date): boolean {
+  return now.getTime() - alert.alertAtMs <= SOUND_MAX_AGE_MS
 }
 
+const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`
+
+/**
+ * Always worked out from `now`, never from when the alert fired:
+ * "London opens in 2 minutes", then "London is now open", then "London opened 4 minutes ago"
+ * (or "opened 2h 05m ago" past an hour), and "London has closed" once it has ended.
+ */
+export function bannerMessage(alert: DueAlert, now: Date): string {
+  const nowMs = now.getTime()
+  if (nowMs < alert.openAtMs) return `${alert.label} opens in ${plural(Math.ceil((alert.openAtMs - nowMs) / 60_000), 'minute')}`
+  if (nowMs >= alert.endAtMs) return `${alert.label} has closed`
+  const minutes = Math.floor((nowMs - alert.openAtMs) / 60_000)
+  if (minutes < 1) return `${alert.label} is now open`
+  if (minutes < 60) return `${alert.label} opened ${plural(minutes, 'minute')} ago`
+  return `${alert.label} opened ${formatDuration(nowMs - alert.openAtMs)} ago`
+}
+
+/**
+ * A banner goes away when its window ends, or BANNER_LINGER_MS after it was first seen open.
+ * Counting from when it was seen (not from the open time) means a banner you slept through is
+ * still there, saying "opened 4 minutes ago", when you come back.
+ */
 export function isBannerExpired(alert: DueAlert, now: Date): boolean {
-  return now.getTime() >= alert.openAtMs + BANNER_LINGER_MS
+  const nowMs = now.getTime()
+  if (nowMs >= alert.endAtMs) return true
+  return alert.openSeenAtMs !== undefined && nowMs >= alert.openSeenAtMs + BANNER_LINGER_MS
+}
+
+/**
+ * Starts the linger clock for banners whose window has opened. Only while the page is visible, so
+ * a background tab that happens to run a timer can't use up the time before anyone sees it.
+ * Returns the same array when nothing changed.
+ */
+export function stampOpenSeen(banners: DueAlert[], now: Date, pageVisible: boolean): DueAlert[] {
+  if (!pageVisible) return banners
+  const nowMs = now.getTime()
+  if (!banners.some((b) => b.openSeenAtMs === undefined && nowMs >= b.openAtMs)) return banners
+  return banners.map((b) => (b.openSeenAtMs === undefined && nowMs >= b.openAtMs ? { ...b, openSeenAtMs: nowMs } : b))
 }
 
 /** Keys of alerts already shown, with each one's open time, so a refresh doesn't repeat them. */

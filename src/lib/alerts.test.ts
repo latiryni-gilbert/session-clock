@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { PRESET_GROUPS } from '../config/presets'
 import {
-  ALERT_GRACE_MS,
+  ALERT_LOOKBACK_MS,
+  BANNER_LINGER_MS,
   FIRED_STORAGE_KEY,
+  SOUND_MAX_AGE_MS,
   alertKey,
   bannerMessage,
   getDueAlerts,
   isBannerExpired,
+  isFreshAlert,
   loadFired,
   pruneFired,
   saveFired,
+  stampOpenSeen,
   windowLabels,
   type DueAlert,
 } from './alerts'
@@ -18,8 +22,20 @@ import type { PresetGroup, TradingWindow } from './tradingWindow'
 import type { StorageLike } from './windowSettings'
 
 type Leads = Record<string, AlertLead>
-const due = (leads: Leads, iso: string, fired = new Map<string, number>(), groups: PresetGroup[] = PRESET_GROUPS) =>
-  getDueAlerts(groups, leads, new Date(iso), fired)
+/**
+ * Alerts due at `iso`, as an ordinary once-a-second check would see them: the previous check was
+ * one second earlier unless `since` says otherwise.
+ */
+const due = (
+  leads: Leads,
+  iso: string,
+  fired = new Map<string, number>(),
+  groups: PresetGroup[] = PRESET_GROUPS,
+  since?: string,
+) => {
+  const now = new Date(iso)
+  return getDueAlerts(groups, leads, now, fired, since ? new Date(since) : new Date(now.getTime() - 1000))
+}
 const ms = (iso: string) => Date.parse(iso)
 
 const custom = (patch: Partial<TradingWindow>): TradingWindow => ({
@@ -55,14 +71,23 @@ describe('getDueAlerts: timing', () => {
     expect(due(london, '2026-01-14T06:00:00Z')).toEqual([])
   })
 
-  it('stays due for the grace period, then stops', () => {
-    expect(due(london, '2026-01-14T07:46:59Z')).toHaveLength(1)
-    expect(due(london, new Date(ms('2026-01-14T07:45:00Z') + ALERT_GRACE_MS).toISOString())).toEqual([])
+  it('is due once: each alert time falls in exactly one check interval', () => {
+    // since is exclusive, now is inclusive.
+    expect(due(london, '2026-01-14T07:45:00Z', undefined, undefined, '2026-01-14T07:44:00Z')).toHaveLength(1)
+    expect(due(london, '2026-01-14T07:46:00Z', undefined, undefined, '2026-01-14T07:45:00Z')).toEqual([])
   })
 
   it('does not alert a page opened well after the alert time, or after the open', () => {
     expect(due(london, '2026-01-14T07:55:00Z')).toEqual([])
     expect(due(london, '2026-01-14T08:00:00Z')).toEqual([])
+  })
+
+  it('on first load, still catches an alert from the last couple of minutes', () => {
+    const now = '2026-01-14T07:46:30Z'
+    const since = new Date(Date.parse(now) - ALERT_LOOKBACK_MS).toISOString()
+    expect(due(london, now, undefined, undefined, since)).toHaveLength(1)
+    const later = '2026-01-14T07:48:00Z'
+    expect(due(london, later, undefined, undefined, new Date(Date.parse(later) - ALERT_LOOKBACK_MS).toISOString())).toEqual([])
   })
 
   it('does nothing for windows with alerts off', () => {
@@ -91,13 +116,14 @@ describe('getDueAlerts: only once per occurrence', () => {
   it('skips an occurrence already in the fired set', () => {
     const [first] = due(leads, '2026-01-14T07:45:00Z')
     const fired = new Map([[first.key, first.openAtMs]])
-    expect(due(leads, '2026-01-14T07:45:30Z', fired)).toEqual([])
-    expect(due(leads, '2026-01-14T07:46:30Z', fired)).toEqual([])
+    // Even if a check interval covers the alert time again (e.g. after a refresh), it is not repeated.
+    expect(due(leads, '2026-01-14T07:45:30Z', fired, undefined, '2026-01-14T07:00:00Z')).toEqual([])
+    expect(due(leads, '2026-01-14T07:46:30Z', fired, undefined, '2026-01-14T07:00:00Z')).toEqual([])
   })
 
   it('gives the same key for the same occurrence at different moments, and a new one the next day', () => {
     const a = due(leads, '2026-01-14T07:45:00Z')[0]
-    const b = due(leads, '2026-01-14T07:46:10Z')[0]
+    const b = due(leads, '2026-01-14T07:46:10Z', undefined, undefined, '2026-01-14T07:00:00Z')[0]
     expect(a.key).toBe(b.key)
     expect(a.key).toBe(alertKey('forex-london', ms('2026-01-14T08:00:00Z')))
     const next = due(leads, '2026-01-15T07:45:00Z', new Map([[a.key, a.openAtMs]]))
@@ -198,7 +224,9 @@ describe('banner text and expiry', () => {
     windowId: 'forex-london',
     label: 'London',
     color: '#fff',
+    alertAtMs: ms('2026-01-14T07:45:00Z'),
     openAtMs: ms('2026-01-14T08:00:00Z'),
+    endAtMs: ms('2026-01-14T17:00:00Z'),
     leadMinutes: 15,
   }
   it('reads "opens in 15 minutes" at the alert time and counts down', () => {
@@ -210,11 +238,171 @@ describe('banner text and expiry', () => {
     expect(bannerMessage(alert, new Date('2026-01-14T07:59:00Z'))).toBe('London opens in 1 minute')
     expect(bannerMessage(alert, new Date('2026-01-14T07:59:45Z'))).toBe('London opens in 1 minute')
   })
-  it('switches to "is now open" and expires a minute after the open', () => {
+  it('says "is now open", then how long ago it opened, then that it has closed', () => {
     expect(bannerMessage(alert, new Date('2026-01-14T08:00:00Z'))).toBe('London is now open')
-    expect(isBannerExpired(alert, new Date('2026-01-14T08:00:59Z'))).toBe(false)
-    expect(isBannerExpired(alert, new Date('2026-01-14T08:01:00Z'))).toBe(true)
-    expect(isBannerExpired(alert, new Date('2026-01-14T07:50:00Z'))).toBe(false)
+    expect(bannerMessage(alert, new Date('2026-01-14T08:00:59Z'))).toBe('London is now open')
+    expect(bannerMessage(alert, new Date('2026-01-14T08:01:00Z'))).toBe('London opened 1 minute ago')
+    expect(bannerMessage(alert, new Date('2026-01-14T08:04:30Z'))).toBe('London opened 4 minutes ago')
+    expect(bannerMessage(alert, new Date('2026-01-14T10:05:00Z'))).toBe('London opened 2h 05m ago')
+    expect(bannerMessage(alert, new Date('2026-01-14T17:00:00Z'))).toBe('London has closed')
+  })
+  it('is worked out from the current time on every call, never fixed when the alert fired', () => {
+    const texts = ['07:45', '07:50', '07:58', '08:00', '08:09'].map((t) => bannerMessage(alert, new Date(`2026-01-14T${t}:00Z`)))
+    expect(new Set(texts).size).toBe(texts.length)
+    expect(texts).toEqual([
+      'London opens in 15 minutes',
+      'London opens in 10 minutes',
+      'London opens in 2 minutes',
+      'London is now open',
+      'London opened 9 minutes ago',
+    ])
+  })
+})
+
+describe('banner lifetime', () => {
+  const base: DueAlert = {
+    key: 'k',
+    windowId: 'forex-london',
+    label: 'London',
+    color: '#fff',
+    alertAtMs: ms('2026-01-14T07:45:00Z'),
+    openAtMs: ms('2026-01-14T08:00:00Z'),
+    endAtMs: ms('2026-01-14T17:00:00Z'),
+    leadMinutes: 15,
+  }
+
+  it('does not start the linger clock before the window opens, or while the page is hidden', () => {
+    const banners = [base]
+    expect(stampOpenSeen(banners, new Date('2026-01-14T07:59:59Z'), true)).toBe(banners)
+    expect(stampOpenSeen(banners, new Date('2026-01-14T08:04:00Z'), false)).toBe(banners)
+  })
+
+  it('stamps once, the first time the open window is seen, and never restamps', () => {
+    const [stamped] = stampOpenSeen([base], new Date('2026-01-14T08:04:00Z'), true)
+    expect(stamped.openSeenAtMs).toBe(ms('2026-01-14T08:04:00Z'))
+    const again = stampOpenSeen([stamped], new Date('2026-01-14T08:04:30Z'), true)
+    expect(again[0].openSeenAtMs).toBe(ms('2026-01-14T08:04:00Z'))
+  })
+
+  it('lingers for a minute after being seen open, and always goes when the window ends', () => {
+    const seen = { ...base, openSeenAtMs: ms('2026-01-14T08:00:00Z') }
+    expect(isBannerExpired(seen, new Date('2026-01-14T08:00:59Z'))).toBe(false)
+    expect(isBannerExpired(seen, new Date(seen.openSeenAtMs + BANNER_LINGER_MS))).toBe(true)
+    expect(isBannerExpired(base, new Date('2026-01-14T16:59:59Z'))).toBe(false)
+    expect(isBannerExpired(base, new Date('2026-01-14T17:00:00Z'))).toBe(true)
+  })
+
+  it('a banner slept through is still there on return, saying how long ago it opened', () => {
+    // Shown at 07:45, phone locked until 08:04, window opened at 08:00 meanwhile.
+    const back = new Date('2026-01-14T08:04:00Z')
+    expect(isBannerExpired(base, back)).toBe(false)
+    const [stamped] = stampOpenSeen([base], back, true)
+    expect(bannerMessage(stamped, back)).toBe('London opened 4 minutes ago')
+    expect(isBannerExpired(stamped, new Date('2026-01-14T08:04:59Z'))).toBe(false)
+    expect(isBannerExpired(stamped, new Date('2026-01-14T08:05:00Z'))).toBe(true)
+  })
+})
+
+describe('catch-up after a pause', () => {
+  // Forex London opens 08:00Z and closes 17:00Z; a 15-minute alert is at 07:45Z.
+  const leads: Leads = { 'forex-london': 15 }
+  const catchUp = (since: string, now: string, fired = new Map<string, number>()) => due(leads, now, fired, undefined, since)
+  const textAt = (alerts: DueAlert[], iso: string) => alerts.map((a) => bannerMessage(a, new Date(iso)))
+
+  it('shows an alert that came due during the pause, with the remaining time, not the original text', () => {
+    const alerts = catchUp('2026-01-14T07:40:00Z', '2026-01-14T07:58:00Z')
+    expect(alerts).toHaveLength(1)
+    expect(textAt(alerts, '2026-01-14T07:58:00Z')).toEqual(['Forex London opens in 2 minutes'])
+  })
+
+  it('shows "opened N minutes ago" if the window opened during the pause and is still running', () => {
+    const alerts = catchUp('2026-01-14T07:40:00Z', '2026-01-14T08:04:00Z')
+    expect(alerts).toHaveLength(1)
+    expect(textAt(alerts, '2026-01-14T08:04:00Z')).toEqual(['Forex London opened 4 minutes ago'])
+  })
+
+  it('skips a window that opened and ended during a long pause', () => {
+    expect(catchUp('2026-01-14T07:40:00Z', '2026-01-14T17:30:00Z')).toEqual([])
+    expect(catchUp('2026-01-14T07:40:00Z', '2026-01-14T17:00:00Z')).toEqual([]) // exactly at the close
+    expect(catchUp('2026-01-14T07:40:00Z', '2026-01-14T16:59:59Z')).toHaveLength(1) // a second before it
+  })
+
+  it('after a multi-day pause, only the occurrence that has not ended is shown, once', () => {
+    // Paused Wed 07:40 -> Fri 07:50. Wednesday's and Thursday's sessions are over; Friday's alert came due.
+    const alerts = catchUp('2026-01-14T07:40:00Z', '2026-01-16T07:50:00Z')
+    expect(alerts.map((a) => a.openAtMs)).toEqual([ms('2026-01-16T08:00:00Z')])
+    expect(textAt(alerts, '2026-01-16T07:50:00Z')).toEqual(['Forex London opens in 10 minutes'])
+  })
+
+  it('after a pause that ends at the weekend, nothing is due', () => {
+    expect(catchUp('2026-01-14T07:40:00Z', '2026-01-17T12:00:00Z')).toEqual([])
+  })
+
+  it('shows the alert only once even if the check runs again', () => {
+    const first = catchUp('2026-01-14T07:40:00Z', '2026-01-14T07:58:00Z')
+    const fired = new Map(first.map((a) => [a.key, a.openAtMs]))
+    expect(catchUp('2026-01-14T07:40:00Z', '2026-01-14T07:58:00Z', fired)).toEqual([])
+    // ...and the next ordinary check, which starts where the catch-up ended, doesn't see it either.
+    expect(catchUp('2026-01-14T07:58:00Z', '2026-01-14T07:58:01Z')).toEqual([])
+  })
+
+  it('a pause that spans an alert time catches it, a pause that ended before it does not', () => {
+    expect(catchUp('2026-01-14T07:30:00Z', '2026-01-14T07:44:00Z')).toEqual([])
+    expect(catchUp('2026-01-14T07:44:00Z', '2026-01-14T07:46:00Z')).toHaveLength(1)
+  })
+
+  it('catches several windows at once, soonest open first', () => {
+    const l: Leads = { 'forex-london': 15, 'forex-new-york': 30 } // London alert 07:45Z, New York (13:00Z) alert 12:30Z
+    const alerts = getDueAlerts(PRESET_GROUPS, l, new Date('2026-01-14T12:45:00Z'), new Map(), new Date('2026-01-14T07:40:00Z'))
+    expect(alerts.map((a) => a.windowId)).toEqual(['forex-london', 'forex-new-york'])
+    expect(textAt(alerts, '2026-01-14T12:45:00Z')).toEqual(['Forex London opened 4h 45m ago', 'New York opens in 15 minutes'])
+  })
+
+  it('catches an overnight window that is still running (CME opened Sunday evening, now Monday 03:00Z)', () => {
+    // CME opens Sun 23:00Z, closes Mon 22:00Z; a 30-min alert is at 22:30Z Sunday.
+    const alerts = getDueAlerts(PRESET_GROUPS, { 'cme-equity-futures': 30 }, new Date('2026-01-19T03:00:00Z'), new Map(), new Date('2026-01-18T22:00:00Z'))
+    expect(alerts).toHaveLength(1)
+    expect(textAt(alerts, '2026-01-19T03:00:00Z')).toEqual(['CME equity futures opened 4h 00m ago'])
+  })
+
+  it('skips an overnight window that opened and ended during the pause (ICT Asian, 01:00Z-05:00Z)', () => {
+    const l: Leads = { 'ict-asian': 30 } // alert 00:30Z on Thu 15 Jan
+    const asian = (now: string) => getDueAlerts(PRESET_GROUPS, l, new Date(now), new Map(), new Date('2026-01-15T00:00:00Z'))
+    expect(asian('2026-01-15T00:40:00Z')).toHaveLength(1)
+    expect(textAt(asian('2026-01-15T03:00:00Z'), '2026-01-15T03:00:00Z')).toEqual(['Asian opened 2h 00m ago'])
+    expect(asian('2026-01-15T05:00:00Z')).toEqual([])
+    expect(asian('2026-01-15T09:00:00Z')).toEqual([])
+  })
+
+  it('catches an alert whose time was before local midnight, with the open after it', () => {
+    const w = custom({ start: '00:10', end: '01:00' }) // opens 00:10 New York
+    // Paused from 23:30 Wed to 00:20 Thu (New York): alert time 23:40 passed, window opened 10 min ago.
+    const since = new Date('2026-01-15T04:30:00Z')
+    const now = new Date('2026-01-15T05:20:00Z')
+    const alerts = getDueAlerts(solo(w), { [w.id]: 30 }, now, new Map(), since)
+    expect(textAt(alerts, now.toISOString())).toEqual(['Test opened 10 minutes ago'])
+  })
+})
+
+describe('sound for catch-up alerts', () => {
+  const alert: DueAlert = {
+    key: 'k',
+    windowId: 'forex-london',
+    label: 'London',
+    color: '#fff',
+    alertAtMs: ms('2026-01-14T07:45:00Z'),
+    openAtMs: ms('2026-01-14T08:00:00Z'),
+    endAtMs: ms('2026-01-14T17:00:00Z'),
+    leadMinutes: 15,
+  }
+  it('plays for an alert that is on time or up to a minute late', () => {
+    expect(isFreshAlert(alert, new Date('2026-01-14T07:45:00Z'))).toBe(true)
+    expect(isFreshAlert(alert, new Date(alert.alertAtMs + SOUND_MAX_AGE_MS))).toBe(true)
+  })
+  it('stays silent for a catch-up alert older than a minute', () => {
+    expect(isFreshAlert(alert, new Date(alert.alertAtMs + SOUND_MAX_AGE_MS + 1))).toBe(false)
+    expect(isFreshAlert(alert, new Date('2026-01-14T07:58:00Z'))).toBe(false)
+    expect(isFreshAlert(alert, new Date('2026-01-14T08:04:00Z'))).toBe(false)
   })
 })
 

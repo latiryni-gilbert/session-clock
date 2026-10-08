@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { getDueAlerts, isBannerExpired, loadFired, pruneFired, saveFired, type DueAlert, type FiredAlerts } from './alerts'
+import {
+  ALERT_LOOKBACK_MS,
+  getDueAlerts,
+  isBannerExpired,
+  isFreshAlert,
+  loadFired,
+  pruneFired,
+  saveFired,
+  stampOpenSeen,
+  type DueAlert,
+  type FiredAlerts,
+} from './alerts'
 import { alertSound } from './alertSound'
 import type { AlertSettings } from './alertSettings'
 import type { PresetGroup } from './tradingWindow'
@@ -26,19 +37,34 @@ export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: D
     return stop
   }, [])
 
+  // When alerts were last checked. After a pause (locked phone, background tab) `now` jumps forward
+  // and everything that came due in between is caught up, once.
+  const lastCheckRef = useRef<number | null>(null)
+
   useEffect(() => {
+    const nowMs = now.getTime()
+    const since = new Date(lastCheckRef.current ?? nowMs - ALERT_LOOKBACK_MS)
+    lastCheckRef.current = nowMs
+
     const fired = firedRef.current!
-    const due = getDueAlerts(groups, settings.lead, now, fired)
+    const due = getDueAlerts(groups, settings.lead, now, fired, since)
     if (due.length > 0) {
       for (const alert of due) fired.set(alert.key, alert.openAtMs)
-      firedRef.current = pruneFired(fired, now.getTime())
+      firedRef.current = pruneFired(fired, nowMs)
       saveFired(firedRef.current)
-      setBanners((prev) => [...prev, ...due.filter((d) => !prev.some((p) => p.key === d.key))])
-      if (settings.soundOn) void alertSound.play()
+      // A catch-up alert older than a minute is shown quietly.
+      if (settings.soundOn && due.some((d) => isFreshAlert(d, now))) void alertSound.play()
     }
-    setBanners((prev) => (prev.some((b) => isBannerExpired(b, now)) ? prev.filter((b) => !isBannerExpired(b, now)) : prev))
+    const visible = typeof document === 'undefined' || document.visibilityState === 'visible'
+    setBanners((prev) => {
+      const added = due.filter((d) => !prev.some((p) => p.key === d.key))
+      const all = stampOpenSeen([...prev, ...added], now, visible)
+      const live = all.filter((b) => !isBannerExpired(b, now))
+      return added.length === 0 && live.length === prev.length && live.every((b, i) => b === prev[i]) ? prev : live
+    })
   }, [groups, settings.lead, settings.soundOn, now])
 
   const dismiss = (key: string) => setBanners((prev) => prev.filter((b) => b.key !== key))
-  return { banners, dismiss }
+  // Expired banners are dropped in the effect above; filtering here too means one is never drawn for a frame.
+  return { banners: banners.filter((b) => !isBannerExpired(b, now)), dismiss }
 }
