@@ -53,7 +53,7 @@ npm run build    # production build into dist/
 - **Alerts only work while the page is open.** There is no background service, so a closed tab means no alert.
 - **Preset times are common conventions** and may differ from your source. Check them against your broker or exchange.
 - **No holiday calendar:** exchange holidays and early closes are not modeled.
-- **Notifications depend on your browser.** They aren't available on iPhone Safari outside a Home Screen app, and may not appear on Android Chrome.
+- **Desktop notifications aren't available everywhere:** not on Android Chrome, and not on iPhone Safari outside a Home Screen app. In-page alerts still work there.
 - Settings and custom windows are saved in your browser only, so they don't sync between devices.
 
 ## Built with AI-assisted development

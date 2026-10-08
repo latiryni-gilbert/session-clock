@@ -33,6 +33,8 @@ interface Props {
   onAlertLeadChange: (id: string, lead: AlertLead | null) => void
   onSoundChange: (soundOn: boolean) => void
   onNotificationsChange: (on: boolean) => void
+  /** Showing a notification failed this session (e.g. Chrome on Android), so treat them as unavailable. */
+  notificationsFailed: boolean
   detectedTimeZone: string
   saveFailed: boolean
 }
@@ -55,6 +57,7 @@ export function Settings({
   onAlertLeadChange,
   onSoundChange,
   onNotificationsChange,
+  notificationsFailed,
   detectedTimeZone,
   saveFailed,
 }: Props) {
@@ -126,6 +129,7 @@ export function Settings({
     }
   }
   const notificationsOn = alerts.notificationsOn && permission === 'granted'
+  const notificationsAvailable = notifySupported && !notificationsFailed
 
   const isEditing = view === 'form' && editing !== null
   const title = view === 'confirm' ? 'Delete window' : isEditing ? 'Edit window' : 'Add window'
@@ -268,7 +272,7 @@ export function Settings({
                         }}
                       />
                     </div>
-                    {notifySupported ? (
+                    {notificationsAvailable ? (
                       <div className="py-1">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">

@@ -31,7 +31,7 @@ function App() {
   const allGroups = buildGroups(custom)
   const groups = applySettings(allGroups, disabled)
   // Only windows that are switched on raise alerts.
-  const { banners, dismiss } = useAlerts(groups, alerts, now)
+  const { banners, dismiss, notificationsFailed } = useAlerts(groups, alerts, now)
 
   return (
     <main className="relative flex min-h-screen flex-col items-center gap-12 px-4 pt-16 pb-12 sm:py-16">
@@ -48,6 +48,7 @@ function App() {
         onAlertLeadChange={changeAlertLead}
         onSoundChange={changeSoundOn}
         onNotificationsChange={changeNotificationsOn}
+        notificationsFailed={notificationsFailed}
         detectedTimeZone={timeZone}
         saveFailed={saveFailed}
       />

@@ -17,6 +17,7 @@ import {
   areNotificationsSupported,
   decideAlertDelivery,
   getNotificationPermission,
+  hasNotificationFailed,
   showAlertNotification,
 } from './notifications'
 import type { AlertSettings } from './alertSettings'
@@ -69,6 +70,8 @@ export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: D
         supported: areNotificationsSupported(),
         permission: getNotificationPermission(),
       })
+      // If the browser refuses (Chrome on Android) nothing is thrown: the banner is already added, and
+      // notifications are marked unavailable for the session (see hasNotificationFailed below).
       if (delivery.notification) for (const d of due) showAlertNotification(bannerMessage(d, now), d.key)
     }
     setBanners((prev) => {
@@ -81,5 +84,7 @@ export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: D
 
   const dismiss = (key: string) => setBanners((prev) => prev.filter((b) => b.key !== key))
   // Expired banners are dropped in the effect above; filtering here too means one is never drawn for a frame.
-  return { banners: banners.filter((b) => !isBannerExpired(b, now)), dismiss }
+  // Read fresh on every render (once a second): true once the browser has refused to show a notification.
+  const notificationsFailed = hasNotificationFailed()
+  return { banners: banners.filter((b) => !isBannerExpired(b, now)), dismiss, notificationsFailed }
 }
