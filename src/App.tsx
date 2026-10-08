@@ -1,3 +1,4 @@
+import { Timeline } from './components/Timeline'
 import { WindowList } from './components/WindowList'
 import { formatClock, getLocalTimeZone } from './lib/formatTime'
 import { useNow } from './lib/useNow'
@@ -21,6 +22,7 @@ function App() {
         </time>
         <p className="text-neutral-500">{timeZone}</p>
       </header>
+      <Timeline now={now} timeZone={timeZone} />
       <WindowList now={now} timeZone={timeZone} />
     </main>
   )
