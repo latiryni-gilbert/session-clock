@@ -1,8 +1,9 @@
-import { PRESET_GROUPS } from '../config/presets'
 import { getHourTicks, getNowFraction, getTimelineSegments } from '../lib/timeline'
+import type { PresetGroup } from '../lib/tradingWindow'
 import { getWindowStatus } from '../lib/windowStatus'
 
 interface Props {
+  groups: PresetGroup[]
   now: Date
   timeZone: string
 }
@@ -12,7 +13,7 @@ const pct = (fraction: number) => `${fraction * 100}%`
 // Width of the short-label column (w-10 + mr-2 = 3rem), used to line up the overlay and hour labels.
 const LABEL_COLUMN = '3rem'
 
-export function Timeline({ now, timeZone }: Props) {
+export function Timeline({ groups, now, timeZone }: Props) {
   const ticks = getHourTicks(now, timeZone)
 
   return (
@@ -20,7 +21,7 @@ export function Timeline({ now, timeZone }: Props) {
       <div className="relative">
         {/* Rows stay in fixed preset order so bars don't jump as statuses change; only the list below re-sorts. */}
         <div className="space-y-3">
-          {PRESET_GROUPS.map((group) => (
+          {groups.map((group) => (
             <div key={group.name}>
               <h3 className="mb-1 text-[10px] font-medium uppercase tracking-[0.2em] text-neutral-500">
                 {group.shortName}
