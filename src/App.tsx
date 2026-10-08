@@ -11,7 +11,7 @@ const timeZone = getLocalTimeZone()
 
 function App() {
   const now = useNow()
-  const { custom, disabled, saveFailed, setDisabled, addCustomWindow } = useWindows()
+  const { custom, disabled, saveFailed, lastDeleted, setDisabled, addCustomWindow, editCustomWindow, deleteWindow, undoDelete } = useWindows()
   const allGroups = buildGroups(custom)
   const groups = applySettings(allGroups, disabled)
 
@@ -22,6 +22,10 @@ function App() {
         disabled={disabled}
         onChange={setDisabled}
         onAddWindow={addCustomWindow}
+        onEditWindow={editCustomWindow}
+        onDeleteWindow={deleteWindow}
+        onUndoDelete={undoDelete}
+        lastDeleted={lastDeleted}
         detectedTimeZone={timeZone}
         saveFailed={saveFailed}
       />
