@@ -17,7 +17,18 @@ A web app that shows which trading sessions are open right now, and when the nex
 - **Presets:** Forex (Sydney, Tokyo, London, New York), NYSE regular hours, CME equity futures, and ICT killzones (Asian, London, New York AM, New York PM).
 - **Custom windows:** add, edit and delete your own, each with its own time zone, days and color. Show or hide any window or group.
 - **In-page alerts:** get a banner (and a quiet chime) 5, 15 or 30 minutes before a window opens. If the page was asleep, it catches up when you come back.
+- **Installable and offline:** install it like an app on your phone or computer. After the first visit it opens without a connection, and it asks before switching to a new version.
 - **Desktop notifications:** optional, and only asked for when you turn them on. They are sent when the tab is in the background.
+
+## Install it
+
+Open **[sessionclock.vercel.app](https://sessionclock.vercel.app/)** first, then:
+
+- **iPhone or iPad (Safari):** tap the Share button, choose **Add to Home Screen**, then **Add**. Use Safari for the most reliable result; other iPhone browsers may not offer it.
+- **Android (Chrome):** open the menu (⋮) and choose **Install app** (or **Add to Home screen**).
+- **Desktop (Chrome or Edge):** click the install icon at the right end of the address bar, or open the menu and choose **Install Session Clock**. Safari 17 or later on a Mac: **File > Add to Dock**.
+
+Once installed it opens in its own window without browser controls, and it keeps working offline. When a new version is released, a small "Update available" bar appears at the bottom; choose **Reload** to switch to it now, or dismiss it and the new version is used the next time you reopen the app.
 
 ## Time zones and daylight saving
 
@@ -25,7 +36,7 @@ Every window is defined in its own home time zone (the London session is 08:00 t
 
 ## Tech stack
 
-React, TypeScript, Vite, Tailwind CSS, Luxon, Vitest, GitHub Actions (CI), and Vercel (hosting).
+React, TypeScript, Vite, Tailwind CSS, Luxon, Vitest and Testing Library, a service worker via vite-plugin-pwa (Workbox), GitHub Actions (CI), and Vercel (hosting).
 
 ## Run it locally
 
