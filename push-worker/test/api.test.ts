@@ -2,61 +2,9 @@ import { env, exports } from 'cloudflare:workers'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from '../src/index'
 import { sha256Hex } from '../src/crypto'
+import { DAY, MIN, PROD, alertIn, alertRows, call, count, makeSubscription, register, resetDb, schedule, subscribe, unsubscribe } from './helpers'
 
-const MIN = 60_000
-const DAY = 24 * 60 * MIN
-const PROD = 'https://sessionclock.vercel.app'
-
-// A real-looking browser subscription (what PushSubscription.toJSON() gives you).
-let counter = 0
-const makeSubscription = (overrides: Record<string, unknown> = {}) => ({
-  endpoint: `https://fcm.googleapis.com/fcm/send/test-${++counter}-${crypto.randomUUID()}`,
-  expirationTime: null,
-  keys: {
-    p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM',
-    auth: 'tBHItJI5svbpez7KI4CCXg',
-  },
-  ...overrides,
-})
-
-const alertIn = (ms: number, extra: Record<string, unknown> = {}) => ({
-  fireAt: new Date(Date.now() + ms).toISOString(),
-  title: 'NYSE opens',
-  body: 'in 15 minutes',
-  ...extra,
-})
-
-const call = (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
-  exports.default.fetch(
-    new Request(`https://push.example.com${path}`, {
-      method,
-      headers: { 'content-type': 'application/json', ...headers },
-      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
-    }),
-  )
-
-const subscribe = (sub = makeSubscription(), headers: Record<string, string> = {}) => call('POST', '/subscribe', sub, headers)
-const schedule = (id: string, secret: string, alerts: unknown) => call('PUT', '/schedule', { id, secret, alerts })
-const unsubscribe = (id: string, secret: string) => call('POST', '/unsubscribe', { id, secret })
-
-async function register(sub = makeSubscription()) {
-  const res = await subscribe(sub)
-  expect(res.status).toBe(200)
-  return { ...((await res.json()) as { id: string; secret: string }), sub }
-}
-
-const alertRows = (id: string) =>
-  env.DB.prepare('SELECT fire_at, title, body, sent_at FROM alerts WHERE subscription_id = ? ORDER BY fire_at').bind(id).all<{
-    fire_at: number
-    title: string
-    body: string
-    sent_at: number | null
-  }>()
-const count = async (table: string) => (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>())!.n
-
-beforeEach(async () => {
-  await env.DB.batch([env.DB.prepare('DELETE FROM alerts'), env.DB.prepare('DELETE FROM subscriptions')])
-})
+beforeEach(resetDb)
 afterEach(() => vi.restoreAllMocks())
 
 describe('POST /subscribe', () => {
@@ -159,7 +107,7 @@ describe('PUT /schedule', () => {
     const at = new Date(Date.now() + 2 * DAY)
     const res = await schedule(id, secret, [{ fireAt: at.toISOString(), title: 'London opens', body: 'in 5 minutes' }])
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ok: true, scheduled: 1 })
+    expect(await res.json()).toEqual({ ok: true, scheduled: 1, added: 1, removed: 0 })
     expect((await alertRows(id)).results).toEqual([
       { fire_at: at.getTime(), title: 'London opens', body: 'in 5 minutes', sent_at: null },
     ])
@@ -178,7 +126,7 @@ describe('PUT /schedule', () => {
     const { id, secret } = await register()
     await schedule(id, secret, [alertIn(DAY, { title: 'old 1' }), alertIn(2 * DAY, { title: 'old 2' }), alertIn(3 * DAY, { title: 'old 3' })])
     const res = await schedule(id, secret, [alertIn(5 * DAY, { title: 'new 1' }), alertIn(4 * DAY, { title: 'new 2' })])
-    expect(await res.json()).toEqual({ ok: true, scheduled: 2 })
+    expect(await res.json()).toEqual({ ok: true, scheduled: 2, added: 2, removed: 3 })
     expect((await alertRows(id)).results.map((r) => r.title)).toEqual(['new 2', 'new 1'])
   })
 

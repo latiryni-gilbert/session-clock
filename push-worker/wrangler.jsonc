@@ -19,5 +19,15 @@
       "database_id": "20ee2d5d-e52f-496d-98dc-6f3579bf9891",
       "migrations_dir": "migrations"
     }
+  ],
+  // Rate limits (Workers Rate Limiting). Counters are kept per Cloudflare location, and the period must be 10 or 60.
+  // The numbers are explained in README.md; keep RETRY_AFTER_SECONDS in src/constants.ts equal to the period.
+  "ratelimits": [
+    // POST /subscribe, per client IP.
+    { "name": "SUBSCRIBE_LIMITER", "namespace_id": "1001", "simple": { "limit": 3, "period": 60 } },
+    // Every PUT /schedule, per client IP: bounds reads and CPU, including for unchanged uploads.
+    { "name": "SCHEDULE_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
+    // PUT /schedule uploads that actually change something, per subscription id: bounds D1 writes.
+    { "name": "SCHEDULE_CHANGE_LIMITER", "namespace_id": "1003", "simple": { "limit": 2, "period": 60 } }
   ]
 }

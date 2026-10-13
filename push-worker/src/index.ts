@@ -2,6 +2,7 @@ import { SERVICE_NAME } from './constants'
 import { corsHeaders, isAllowedOrigin } from './cors'
 import { schedule, subscribe, unsubscribe } from './handlers'
 import { errorResponse, HttpError, json } from './http'
+import { enforceRateLimit } from './ratelimit'
 
 // Note: a Worker's entry module may only export handlers, so everything else lives in other files.
 
@@ -18,15 +19,30 @@ function health(request: Request, env: Cloudflare.Env): Response {
 }
 
 type Handler = (request: Request, env: Cloudflare.Env) => Promise<Response>
+interface Route {
+  method: string
+  handler: Handler
+  /** Per-client-IP rate limit applied before anything else is done with the request. */
+  limiter?: 'SUBSCRIBE_LIMITER' | 'SCHEDULE_LIMITER'
+}
 
-const API: Record<string, { method: string; handler: Handler }> = {
-  '/subscribe': { method: 'POST', handler: subscribe },
-  '/schedule': { method: 'PUT', handler: schedule },
+const API: Record<string, Route> = {
+  '/subscribe': { method: 'POST', handler: subscribe, limiter: 'SUBSCRIBE_LIMITER' },
+  '/schedule': { method: 'PUT', handler: schedule, limiter: 'SCHEDULE_LIMITER' },
   '/unsubscribe': { method: 'POST', handler: unsubscribe },
 }
 
+/** Seconds until 00:00 UTC, when D1's daily free-tier counters reset. */
+function secondsUntilUtcMidnight(now = new Date()): number {
+  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
+  return Math.max(1, Math.ceil((midnight - now.getTime()) / 1000))
+}
+
+// D1's free tier fails every query (reads too) once a daily row limit is used up, until 00:00 UTC.
+const D1_DAILY_LIMIT_ERROR = /daily row (read|write) limit/i
+
 /** Runs an API endpoint behind the CORS rules. */
-async function api(request: Request, env: Cloudflare.Env, route: { method: string; handler: Handler }): Promise<Response> {
+async function api(request: Request, env: Cloudflare.Env, route: Route): Promise<Response> {
   // Browsers always send Origin on cross-origin requests; other clients (curl, the app's server) don't.
   // A browser page from any origin we don't list is refused before anything runs.
   const origin = request.headers.get('origin')
@@ -40,10 +56,17 @@ async function api(request: Request, env: Cloudflare.Env, route: { method: strin
     response = errorResponse(405, 'Method not allowed', { allow: `${route.method}, OPTIONS` })
   } else {
     try {
+      // Identify the client by the address Cloudflare saw. Preflights and wrong methods are not counted.
+      if (route.limiter) await enforceRateLimit(env[route.limiter], request.headers.get('cf-connecting-ip'))
       response = await route.handler(request, env)
     } catch (error) {
       if (error instanceof HttpError) {
-        response = errorResponse(error.status, error.message)
+        response = errorResponse(error.status, error.message, error.headers)
+      } else if (error instanceof Error && D1_DAILY_LIMIT_ERROR.test(error.message)) {
+        console.warn('D1 daily free-tier limit reached')
+        response = errorResponse(503, 'Storage is unavailable until the daily limit resets at 00:00 UTC', {
+          'retry-after': String(secondsUntilUtcMidnight()),
+        })
       } else {
         // Log only the kind of error: request data (endpoints, keys, secrets) must never reach the logs.
         console.error('Unhandled error:', error instanceof Error ? error.name : 'unknown')
