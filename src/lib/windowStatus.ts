@@ -1,11 +1,11 @@
 import { DateTime } from 'luxon'
 import { getWindowOccurrence } from './convertWindow'
 import { formatDuration } from './formatTime'
-import type { TradingWindow } from './tradingWindow'
+import type { Holiday, TradingWindow } from './tradingWindow'
 
 export type WindowStatus =
-  | { kind: 'active'; start: DateTime; end: DateTime; endsInMs: number }
-  | { kind: 'upcoming'; start: DateTime; end: DateTime; opensInMs: number }
+  | { kind: 'active'; start: DateTime; end: DateTime; endsInMs: number; shortenedBy?: Holiday }
+  | { kind: 'upcoming'; start: DateTime; end: DateTime; opensInMs: number; shortenedBy?: Holiday }
 
 const DAY_MS = 24 * 60 * 60 * 1000
 /** Home-date window searched for occurrences: covers a past overnight start through a full week ahead. */

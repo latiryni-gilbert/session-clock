@@ -15,6 +15,9 @@ const LABEL_COLUMN = '4rem'
 
 export function Timeline({ groups, now, timeZone }: Props) {
   const ticks = getHourTicks(now, timeZone)
+  // Segments are worked out once per window; any that end early because of a market holiday get a marker.
+  const segmentsById = new Map(groups.flatMap((g) => g.windows).map((w) => [w.id, getTimelineSegments(w, now, timeZone)]))
+  const hasEarlyClose = [...segmentsById.values()].some((segs) => segs.some((s) => s.earlyClose))
 
   return (
     <section aria-label="Today's timeline" className="w-full max-w-2xl">
@@ -28,12 +31,18 @@ export function Timeline({ groups, now, timeZone }: Props) {
               </h3>
               <div className="space-y-1.5">
                 {group.windows.map((window) => {
+                  const segments = segmentsById.get(window.id) ?? []
+                  const earlyClose = segments.find((s) => s.earlyClose)?.earlyClose
                   const active = getWindowStatus(window, now, timeZone).kind === 'active'
                   return (
-                    <div key={window.id} className="flex items-center" title={window.name}>
+                    <div
+                      key={window.id}
+                      className="flex items-center"
+                      title={earlyClose ? `${window.name}: early close (${earlyClose.name})` : window.name}
+                    >
                       <span className="mr-2 w-14 shrink-0 truncate text-xs text-neutral-400">{window.shortName}</span>
                       <div className="relative h-3 flex-1 overflow-hidden rounded-sm bg-neutral-900">
-                        {getTimelineSegments(window, now, timeZone).map((seg) => (
+                        {segments.map((seg) => (
                           <div
                             key={seg.start}
                             className={`absolute inset-y-0 min-w-0.5 rounded-sm ${active ? 'opacity-100' : 'opacity-30'}`}
@@ -42,7 +51,12 @@ export function Timeline({ groups, now, timeZone }: Props) {
                               width: pct(seg.end - seg.start),
                               backgroundColor: window.color,
                             }}
-                          />
+                          >
+                            {seg.earlyClose && (
+                              // Amber tick at the end of a session cut short by an early close.
+                              <span aria-hidden className="absolute inset-y-0 right-0 w-0.5 bg-amber-400" />
+                            )}
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -81,6 +95,12 @@ export function Timeline({ groups, now, timeZone }: Props) {
           </span>
         ))}
       </div>
+      {hasEarlyClose && (
+        <p className="mt-1 flex items-center gap-1.5 text-[10px] text-amber-300/90" style={{ marginLeft: LABEL_COLUMN }}>
+          <span aria-hidden className="inline-block h-2.5 w-0.5 bg-amber-400" />
+          Early close
+        </p>
+      )}
     </section>
   )
 }

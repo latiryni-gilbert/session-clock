@@ -32,18 +32,19 @@ describe('same-day window (NYSE 09:30-16:00, Mon-Fri)', () => {
   })
 })
 
+// NYSE weekend cases use 23-26 Jan 2026: the Monday of the 16-19 Jan weekend (19th) is Martin Luther King Jr. Day, a holiday.
 describe('weekends (more than 24h away shows day and time)', () => {
   it('NYSE on Friday evening opens Monday', () => {
-    expect(label('nyse-regular', '2026-01-16T18:00')).toBe('Opens Mon 09:30')
+    expect(label('nyse-regular', '2026-01-23T18:00')).toBe('Opens Mon 09:30')
   })
   it('NYSE on Saturday opens Monday', () => {
-    expect(label('nyse-regular', '2026-01-17T12:00')).toBe('Opens Mon 09:30')
+    expect(label('nyse-regular', '2026-01-24T12:00')).toBe('Opens Mon 09:30')
   })
   it('NYSE on Sunday still opens Monday (more than 24h away from Sunday morning)', () => {
-    expect(label('nyse-regular', '2026-01-18T08:00')).toBe('Opens Mon 09:30')
+    expect(label('nyse-regular', '2026-01-25T08:00')).toBe('Opens Mon 09:30')
   })
   it('NYSE on Sunday evening is within 24h, so it counts down', () => {
-    expect(label('nyse-regular', '2026-01-18T18:00')).toBe('Opens in 15h 30m')
+    expect(label('nyse-regular', '2026-01-25T18:00')).toBe('Opens in 15h 30m')
   })
   it('CME on Friday evening opens Sunday 18:00', () => {
     expect(label('cme-equity-futures', '2026-01-16T19:00')).toBe('Opens Sun 18:00')

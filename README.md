@@ -13,6 +13,7 @@ A web app that shows which trading sessions are open right now, and when the nex
 - **Clock** with your detected time zone.
 - **24-hour timeline** for your local day, with a moving "now" line. Overnight sessions are split at midnight, and active sessions are brighter.
 - **Session list with live status:** "Active - ends in 1h 12m", "Opens in 3h 05m", or "Opens Sun 18:00" when the next open is more than a day away. Active sessions come first.
+- **NYSE holidays and early closes:** on a closed day the NYSE row says why ("Closed - Thanksgiving Day") and still shows the next open. Early closes (13:00 ET) get a tag and a marker on the timeline, and a note warns when tomorrow is a holiday or an early close.
 - **Presets:** Forex (Sydney, Tokyo, London, New York), NYSE regular hours, CME equity futures, and ICT killzones (Asian, London, New York AM, New York PM).
 - **Custom windows:** add, edit and delete your own, each with its own time zone, days and color. Show or hide any window or group.
 - **In-page alerts:** get a banner (and a quiet chime) 5, 15 or 30 minutes before a window opens. If the page was asleep, it catches up when you come back.
@@ -52,7 +53,7 @@ npm run build    # production build into dist/
 
 - **Alerts only work while the page is open.** There is no background service, so a closed tab means no alert.
 - **Preset times are common conventions** and may differ from your source. Check them against your broker or exchange.
-- **No holiday calendar:** exchange holidays and early closes are not modeled.
+- **NYSE holidays and early closes are included through 2027; CME holiday hours are not modeled yet.**
 - **Desktop notifications aren't available everywhere:** not on Android Chrome, and not on iPhone Safari outside a Home Screen app. In-page alerts still work there.
 - Settings and custom windows are saved in your browser only, so they don't sync between devices.
 

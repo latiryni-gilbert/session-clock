@@ -26,6 +26,31 @@ export interface TradingWindow {
   days: Weekday[]
   /** CSS color for display, e.g. "#3b82f6". */
   color: string
+  /** Optional market holidays. A closed day has no session; an early-close day ends at the calendar's early-close time. */
+  holidays?: HolidayCalendar
+}
+
+export type HolidayType = 'closed' | 'early-close'
+
+export interface Holiday {
+  /** Calendar date "yyyy-MM-dd" in the calendar's time zone. */
+  date: string
+  name: string
+  /** "closed": no session that day. "early-close": the session ends at the calendar's early-close time. */
+  type: HolidayType
+}
+
+/** Days a market is closed or closes early. Dates are matched against the day a window STARTS on, in its home zone. */
+export interface HolidayCalendar {
+  id: string
+  name: string
+  /** Time zone the dates and `earlyCloseTime` are in. Must match the home zone of any window it is attached to. */
+  timeZone: string
+  /** Closing time on an early-close day, "HH:mm". */
+  earlyCloseTime: string
+  /** The last date this data covers ("yyyy-MM-dd"). Beyond it the calendar knows nothing, so every day looks like a normal trading day. */
+  coversThrough: string
+  holidays: Holiday[]
 }
 
 export interface PresetGroup {

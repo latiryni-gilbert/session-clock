@@ -1,4 +1,5 @@
 import type { PresetGroup, Weekday } from '../lib/tradingWindow'
+import { NYSE_HOLIDAYS } from './holidays'
 
 const MON_FRI: Weekday[] = [1, 2, 3, 4, 5]
 const SUN_THU: Weekday[] = [7, 1, 2, 3, 4]
@@ -18,7 +19,7 @@ export const PRESET_GROUPS: PresetGroup[] = [
     name: 'NYSE',
     shortName: 'NYSE',
     windows: [
-      { id: 'nyse-regular', name: 'NYSE regular hours', shortName: 'NYSE', start: '09:30', end: '16:00', timeZone: 'America/New_York', days: MON_FRI, color: '#8b5cf6' },
+      { id: 'nyse-regular', name: 'NYSE regular hours', shortName: 'NYSE', start: '09:30', end: '16:00', timeZone: 'America/New_York', days: MON_FRI, color: '#8b5cf6', holidays: NYSE_HOLIDAYS },
     ],
   },
   {
