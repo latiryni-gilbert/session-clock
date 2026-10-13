@@ -1,17 +1,12 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import App from './App'
 import { advance, freezeClock } from './test/clock'
+import { rowsOf } from './test/queries'
 
 // The component project pins the browser time zone to America/New_York (see vite.config.ts), so
 // 15:48Z is 10:48 in the app. 2026-01-14 is a Wednesday and New York is on standard time (UTC-5).
 const WED_1048_NY = '2026-01-14T15:48:00Z'
-
-/** The rows of one group in the session list, found by the group's visible heading. */
-function rowsOf(group: string): HTMLElement[] {
-  const section = screen.getByRole('heading', { level: 2, name: group }).closest('section')!
-  return within(section).getAllByRole('listitem')
-}
 
 describe('clock', () => {
   it('shows the frozen time and the time zone name', () => {
