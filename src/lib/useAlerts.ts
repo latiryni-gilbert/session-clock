@@ -3,6 +3,7 @@ import {
   ALERT_LOOKBACK_MS,
   bannerMessage,
   getDueAlerts,
+  getDueNewsAlerts,
   isBannerExpired,
   isFreshAlert,
   loadFired,
@@ -13,6 +14,7 @@ import {
   type FiredAlerts,
 } from './alerts'
 import { alertSound } from './alertSound'
+import { NEWS_CALENDAR } from '../config/newsEvents'
 import {
   areNotificationsSupported,
   decideAlertDelivery,
@@ -20,7 +22,7 @@ import {
   hasNotificationFailed,
   showAlertNotification,
 } from './notifications'
-import type { AlertSettings } from './alertSettings'
+import type { AlertLead, AlertSettings } from './alertSettings'
 import type { PresetGroup } from './tradingWindow'
 
 /**
@@ -28,7 +30,7 @@ import type { PresetGroup } from './tradingWindow'
  * Pass only the windows that are switched on. Each occurrence alerts once: shown alerts are
  * remembered in localStorage, so a refresh during the alert minute doesn't repeat it.
  */
-export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: Date) {
+export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: Date, newsAlertLead: AlertLead | null = null) {
   const [banners, setBanners] = useState<DueAlert[]>([])
   const firedRef = useRef<FiredAlerts | null>(null)
   if (firedRef.current === null) firedRef.current = loadFired()
@@ -56,7 +58,10 @@ export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: D
 
     const visible = typeof document === 'undefined' || document.visibilityState === 'visible'
     const fired = firedRef.current!
-    const due = getDueAlerts(groups, settings.lead, now, fired, since)
+    const dueWindows = getDueAlerts(groups, settings.lead, now, fired, since)
+    // News events (CPI, NFP, PPI, FOMC) use the same banners, sound and notifications as window alerts.
+    const dueNews = newsAlertLead ? getDueNewsAlerts(NEWS_CALENDAR.events, newsAlertLead, now, fired, since) : []
+    const due = [...dueWindows, ...dueNews].sort((a, b) => a.openAtMs - b.openAtMs)
     if (due.length > 0) {
       for (const alert of due) fired.set(alert.key, alert.openAtMs)
       firedRef.current = pruneFired(fired, nowMs)
@@ -80,7 +85,7 @@ export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: D
       const live = all.filter((b) => !isBannerExpired(b, now))
       return added.length === 0 && live.length === prev.length && live.every((b, i) => b === prev[i]) ? prev : live
     })
-  }, [groups, settings.lead, settings.soundOn, settings.notificationsOn, now])
+  }, [groups, settings.lead, settings.soundOn, settings.notificationsOn, newsAlertLead, now])
 
   const dismiss = (key: string) => setBanners((prev) => prev.filter((b) => b.key !== key))
   // Expired banners are dropped in the effect above; filtering here too means one is never drawn for a frame.

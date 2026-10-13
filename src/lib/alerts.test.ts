@@ -4,10 +4,12 @@ import {
   ALERT_LOOKBACK_MS,
   BANNER_LINGER_MS,
   FIRED_STORAGE_KEY,
+  NEWS_EVENT_LINGER_MS,
   SOUND_MAX_AGE_MS,
   alertKey,
   bannerMessage,
   getDueAlerts,
+  getDueNewsAlerts,
   isBannerExpired,
   isFreshAlert,
   loadFired,
@@ -17,7 +19,9 @@ import {
   windowLabels,
   type DueAlert,
 } from './alerts'
+import { NEWS_CALENDAR } from '../config/newsEvents'
 import type { AlertLead } from './alertSettings'
+import type { NewsEvent } from './newsEvents'
 import type { PresetGroup, TradingWindow } from './tradingWindow'
 import type { StorageLike } from './windowSettings'
 
@@ -447,5 +451,90 @@ describe('fired alerts storage', () => {
       ['future', now + 600_000],
     ])
     expect([...pruneFired(fired, now).keys()]).toEqual(['recent', 'future'])
+  })
+})
+
+describe('news event alerts', () => {
+  // CPI on Tue 10 Nov 2026 is at 08:30 New York = 13:30Z. A 15-minute alert is at 13:15Z.
+  const events = NEWS_CALENDAR.events
+  const newsDue = (iso: string, lead: number, fired = new Map<string, number>(), since?: string) => {
+    const now = new Date(iso)
+    return getDueNewsAlerts(events, lead, now, fired, since ? new Date(since) : new Date(now.getTime() - 1000))
+  }
+  const text = (alerts: DueAlert[], iso: string) => alerts.map((a) => bannerMessage(a, new Date(iso)))
+
+  it('is due at the alert time, not before', () => {
+    const [a] = newsDue('2026-11-10T13:15:00Z', 15)
+    expect(a).toMatchObject({ windowId: 'cpi-2026-11-10', kind: 'news', label: 'CPI', leadMinutes: 15, openAtMs: ms('2026-11-10T13:30:00Z') })
+    expect(newsDue('2026-11-10T13:14:59Z', 15)).toEqual([])
+  })
+
+  it('uses the chosen lead time (5, 15 or 30 minutes)', () => {
+    expect(newsDue('2026-11-10T13:25:00Z', 5)).toHaveLength(1)
+    expect(newsDue('2026-11-10T13:00:00Z', 30)).toHaveLength(1)
+    expect(newsDue('2026-11-10T13:15:00Z', 5)).toEqual([])
+  })
+
+  it('works for an FOMC decision at 14:00, with its projections noted in the label', () => {
+    const [a] = newsDue('2026-12-09T18:45:00Z', 15) // 13:45 New York
+    expect(a.label).toBe('FOMC decision (with projections)')
+    expect(a.openAtMs).toBe(ms('2026-12-09T19:00:00Z'))
+    expect(newsDue('2027-01-27T18:30:00Z', 30)[0].label).toBe('FOMC decision')
+  })
+
+  it('reads "CPI in 15 minutes", counts down, then says it is out', () => {
+    const alerts = newsDue('2026-11-10T13:15:00Z', 15)
+    expect(text(alerts, '2026-11-10T13:15:00Z')).toEqual(['CPI in 15 minutes'])
+    expect(text(alerts, '2026-11-10T13:29:10Z')).toEqual(['CPI in 1 minute'])
+    expect(text(alerts, '2026-11-10T13:30:00Z')).toEqual(['CPI is out now'])
+    expect(text(alerts, '2026-11-10T13:34:30Z')).toEqual(['CPI released 4 minutes ago'])
+  })
+
+  it('shows an alert only once: the fired record stops a repeat', () => {
+    const [a] = newsDue('2026-11-10T13:15:00Z', 15)
+    const fired = new Map([[a.key, a.openAtMs]])
+    expect(newsDue('2026-11-10T13:15:30Z', 15, fired, '2026-11-10T13:00:00Z')).toEqual([])
+  })
+
+  it('catches up after a pause: the right text for before, just after, and long after the event', () => {
+    const since = '2026-11-10T13:00:00Z'
+    expect(text(newsDue('2026-11-10T13:25:00Z', 15, undefined, since), '2026-11-10T13:25:00Z')).toEqual(['CPI in 5 minutes'])
+    expect(text(newsDue('2026-11-10T13:34:00Z', 15, undefined, since), '2026-11-10T13:34:00Z')).toEqual(['CPI released 4 minutes ago'])
+    // More than 15 minutes after the event it counts as over and is skipped.
+    expect(newsDue(new Date(ms('2026-11-10T13:30:00Z') + NEWS_EVENT_LINGER_MS).toISOString(), 15, undefined, since)).toEqual([])
+    expect(newsDue('2026-11-10T18:00:00Z', 15, undefined, since)).toEqual([])
+  })
+
+  it('does not alert a page opened after the alert time', () => {
+    expect(newsDue('2026-11-10T13:20:00Z', 15)).toEqual([]) // since = one second ago
+  })
+
+  it('has no alerts on a day without events, and none when the data has ended', () => {
+    expect(newsDue('2026-11-11T13:15:00Z', 15)).toEqual([])
+    expect(newsDue('2028-03-01T13:15:00Z', 15)).toEqual([])
+  })
+
+  it('finds an alert whose time falls the evening before (local midnight is no boundary)', () => {
+    const early: NewsEvent[] = [{ ...events[0], id: 'e', date: '2026-11-10', time: '00:10' }]
+    const now = new Date('2026-11-10T04:40:00Z') // 23:40 on the 9th in New York
+    const [a] = getDueNewsAlerts(early, 30, now, new Map(), new Date(now.getTime() - 1000))
+    expect(a.openAtMs).toBe(ms('2026-11-10T05:10:00Z'))
+  })
+
+  it('lists several due events soonest first', () => {
+    const two: NewsEvent[] = [
+      { ...events[0], id: 'later', date: '2026-11-10', time: '09:00' },
+      { ...events[0], id: 'sooner', date: '2026-11-10', time: '08:30' },
+    ]
+    const now = new Date('2026-11-10T13:35:00Z') // both 30-minute alert times have passed (13:00Z and 13:30Z)
+    const due = getDueNewsAlerts(two, 30, now, new Map(), new Date(ms('2026-11-10T12:00:00Z')))
+    expect(due.map((d) => d.windowId)).toEqual(['sooner', 'later'])
+  })
+
+  it('a news banner lingers a minute after being seen at the event time, like a window banner', () => {
+    const [a] = newsDue('2026-11-10T13:15:00Z', 15)
+    const seen = { ...a, openSeenAtMs: ms('2026-11-10T13:30:10Z') }
+    expect(isBannerExpired(seen, new Date('2026-11-10T13:31:09Z'))).toBe(false)
+    expect(isBannerExpired(seen, new Date('2026-11-10T13:31:10Z'))).toBe(true)
   })
 })
