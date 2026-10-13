@@ -3,6 +3,7 @@ import { corsHeaders, isAllowedOrigin } from './cors'
 import { schedule, subscribe, unsubscribe } from './handlers'
 import { errorResponse, HttpError, json } from './http'
 import { enforceRateLimit } from './ratelimit'
+import { secondsUntilUtcMidnight } from './time'
 
 // Note: a Worker's entry module may only export handlers, so everything else lives in other files.
 
@@ -32,12 +33,6 @@ const API: Record<string, Route> = {
   '/unsubscribe': { method: 'POST', handler: unsubscribe },
 }
 
-/** Seconds until 00:00 UTC, when D1's daily free-tier counters reset. */
-function secondsUntilUtcMidnight(now = new Date()): number {
-  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
-  return Math.max(1, Math.ceil((midnight - now.getTime()) / 1000))
-}
-
 // D1's free tier fails every query (reads too) once a daily row limit is used up, until 00:00 UTC.
 const D1_DAILY_LIMIT_ERROR = /daily row (read|write) limit/i
 
@@ -65,7 +60,7 @@ async function api(request: Request, env: Cloudflare.Env, route: Route): Promise
       } else if (error instanceof Error && D1_DAILY_LIMIT_ERROR.test(error.message)) {
         console.warn('D1 daily free-tier limit reached')
         response = errorResponse(503, 'Storage is unavailable until the daily limit resets at 00:00 UTC', {
-          'retry-after': String(secondsUntilUtcMidnight()),
+          'retry-after': String(secondsUntilUtcMidnight(Date.now())),
         })
       } else {
         // Log only the kind of error: request data (endpoints, keys, secrets) must never reach the logs.

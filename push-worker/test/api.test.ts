@@ -161,9 +161,13 @@ describe('PUT /schedule', () => {
     expect(row!.last_seen_at).toBeGreaterThan(Date.now() - 10_000)
   })
 
-  it('accepts exactly 500 alerts', async () => {
+  it('accepts a schedule of exactly 500 alerts, as long as at most 400 of them are new that day', async () => {
     const { id, secret } = await register()
-    const alerts = Array.from({ length: 500 }, (_, i) => alertIn(MIN * (i + 1), { title: `a${i}`, body: 'x' }))
+    const base = Date.now()
+    const alerts = Array.from({ length: 500 }, (_, i) => ({ fireAt: new Date(base + MIN * (i + 1)).toISOString(), title: `a${i}`, body: 'x' }))
+    // 100 of them are already stored, so the upload adds 400: exactly the daily allowance.
+    const seed = env.DB.prepare('INSERT INTO alerts (subscription_id, fire_at, title, body) VALUES (?, ?, ?, ?)')
+    await env.DB.batch(alerts.slice(0, 100).map((a) => seed.bind(id, Date.parse(a.fireAt), a.title, a.body)))
     const res = await schedule(id, secret, alerts)
     expect(res.status).toBe(200)
     expect((await alertRows(id)).results).toHaveLength(500)

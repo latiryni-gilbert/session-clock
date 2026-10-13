@@ -12,7 +12,7 @@ All endpoints take and return JSON. Errors look like `{ "ok": false, "error": "<
 |---|---|---|
 | `GET /health` | `200` `{ "ok": true, "service": "session-clock-push", "version": "<git commit sha>" }` (`HEAD` works too) | `405` for other methods |
 | `POST /subscribe` | `200` `{ "id": "...", "secret": "..." }` | `400` invalid subscription, `429` too many requests |
-| `PUT /schedule` | `200` `{ "ok": true, "scheduled": <count>, "added": <n>, "removed": <n> }`, or `{ "ok": true, "scheduled": <count>, "unchanged": true }` | `401` wrong id/secret, `400` invalid alerts, `409` overlapping upload, `429` too many requests |
+| `PUT /schedule` | `200` `{ "ok": true, "scheduled": <count>, "added": <n>, "removed": <n> }`, or `{ "ok": true, "scheduled": <count>, "unchanged": true }` | `401` wrong id/secret, `400` invalid alerts or an upload too big for one day, `409` overlapping upload, `429` too many requests or the daily change cap |
 | `POST /unsubscribe` | `200` `{ "ok": true }` | `401` wrong id/secret |
 | anything else | | `404` `Not found` |
 
@@ -52,6 +52,7 @@ To keep D1 writes low (see [Write budget](#write-budget)), the Worker stores a h
 - **Same schedule again** (in any order): nothing is written. The response has `"unchanged": true`.
 - **Changed schedule**: only the difference is written. Alerts that are no longer in the list are deleted and new ones are inserted (alerts are matched on `fireAt` + `title` + `body`); the rest are not touched. The response says how many were `added` and `removed`.
 - So **send the whole schedule every time, and re-sending is free**. Don't send only what changed: anything missing from the list is removed.
+- A subscription may have at most **400 alerts added + removed per UTC day** (the [daily cap](#daily-cap-on-alert-changes)). Re-sending an unchanged schedule never counts.
 - A changing upload is applied all or nothing. If another upload for the same subscription lands in the middle of it, one of them gets `409`; re-send it.
 
 ### `POST /unsubscribe`
@@ -78,11 +79,23 @@ Using [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-
 |---|---|---|
 | `POST /subscribe`: **3 a minute** | client IP | A person subscribes once per install. 3 leaves room for a retry or two, or a few devices on one home network, and caps what one address can create at about 4,300 subscriptions a day (about 13,000 rows written, 13% of the daily budget). |
 | `PUT /schedule`: **10 a minute** | client IP | The app uploads when it opens and when settings change, and unchanged uploads write nothing. This only bounds reads and CPU (including guessing-style requests with wrong credentials) and leaves room for several devices behind one address. |
-| `PUT /schedule` that **changes** something: **2 a minute** | subscription id | This is the one that guards the write budget. A real user changes their alerts a few times a day at most (the app should wait a moment after the last edit before uploading), so a buggy client stuck in a loop of changing uploads is held to about 2,900 a day instead of thousands a minute. Re-sending a schedule that is already stored is not limited by this one. |
+| `PUT /schedule` that **changes** something: **2 a minute** | subscription id | This is the one that guards the write budget. A real user changes their alerts a few times a day at most (the app should wait a moment after the last edit before uploading), so a buggy client stuck in a loop of changing uploads is held to about 2,900 a day instead of thousands a minute. The [daily cap](#daily-cap-on-alert-changes) then limits how much those uploads can actually change. Re-sending a schedule that is already stored is not limited by this one. |
 
 `POST /unsubscribe` is not limited: it only frees rows. Requests with no client address (only possible outside Cloudflare, such as local development) are not limited, and if a limiter is unavailable the request goes ahead rather than failing.
 
 **Not available on the free plan?** I couldn't open Cloudflare's docs from the build environment, so whether the Free plan includes this binding is unconfirmed. If it doesn't, Cloudflare should reject the deploy and the previous Worker keeps running (the migration that runs first is additive, so the old code still works against it). The alternative would be a Cloudflare WAF rate-limiting rule, which needs a domain on Cloudflare rather than `workers.dev`. Counting in D1 instead would spend the very writes we are trying to save.
+
+### Daily cap on alert changes
+
+Each subscription may have at most **400 alerts added + removed per UTC day**. A first upload is about 150 alerts and a normal day a few dozen, so only a client stuck in a loop gets near it.
+
+- **Over the cap:** the upload is refused with `429`, `Retry-After` set to the seconds until 00:00 UTC, and an error like `Daily limit of 400 alert changes reached for this subscription (399 used today, this upload needs 2); try again after 00:00 UTC`. Nothing is written, not even a counter: the check happens before any write.
+- **Exactly at the cap is fine**: 399 used plus 1 more is allowed; the next change is refused.
+- **Unchanged uploads never count** and still cost 0 rows, even when the cap is used up.
+- **Resets at 00:00 UTC** by itself: the subscription stores the UTC day of its count, and a count from an earlier day is ignored.
+- **It adds no writes.** The day and the count are two columns on the subscription row, set in the same `UPDATE` that already records the new schedule hash.
+- **One upload can't change more than 400 alerts on its own.** The schedule itself can hold up to 500, but building a 401 to 500 alert schedule from nothing needs 401 or more changes, so it would never fit in a day. That case is answered with `400` (not `429`, because waiting until tomorrow would not help). Normal clients are nowhere near it. If you ever need schedules that long, raise the cap or lower the 500 limit.
+- A refused upload still uses one of the 2-a-minute changing-upload allowance above, because that check comes first.
 
 ### Logging
 
@@ -92,7 +105,7 @@ The Worker logs nothing about requests. An unexpected failure returns a generic 
 
 D1 database `session-clock-push`, bound to the Worker as `DB` (see `wrangler.jsonc`; the database ID identifies it and is not a credential). The schema is the numbered files in `migrations/`:
 
-- `subscriptions`: `id`, `endpoint` (unique), `p256dh`, `auth`, `secret_hash` (SHA-256 of the secret; the secret itself is never stored), `schedule_hash` (fingerprint of the last accepted schedule; `NULL` before the first), `created_at`, `last_seen_at`.
+- `subscriptions`: `id`, `endpoint` (unique), `p256dh`, `auth`, `secret_hash` (SHA-256 of the secret; the secret itself is never stored), `schedule_hash` (fingerprint of the last accepted schedule; `NULL` before the first), `changes_day` and `changes_count` (the UTC day number and how many alerts were added + removed on it, for the daily cap), `created_at`, `last_seen_at`.
 - `alerts`: `id`, `subscription_id` (deleted with its subscription), `fire_at`, `title`, `body`, `sent_at` (`NULL` until sent).
 - `idx_alerts_due`: a partial index on `alerts(fire_at) WHERE sent_at IS NULL`, so "unsent alerts due before time X" never scans sent alerts.
 
@@ -125,6 +138,8 @@ Measured with D1's `meta.rows_written` in the tests, then extended to the parts 
 | **One alert from creation to cleanup** | **about 7** |
 | Upload that changes the schedule | the alerts above, plus 1 (the hash and `last_seen_at`) |
 | Upload that doesn't change it | **0** (1 row, at most once a day, to refresh `last_seen_at`) |
+| Upload refused by the daily cap | **0** |
+| The daily cap's counter | **0** extra (it rides in the subscription row that is already updated) |
 
 ### How many users
 
@@ -145,7 +160,35 @@ So the day's total is roughly `80 × daily active users + 455 × new users that 
 
 **Before these changes** every upload deleted and re-inserted the whole schedule, about 150 alerts × 6 = 900 rows, and the app uploads on every launch. At 3 uploads a day that is about 2,700 rows per user per day, so the free tier covered roughly **35 users**. The hash check and the diff are what take it from dozens to hundreds.
 
-What the budget does not cover is a determined attacker: they can create subscriptions from many addresses, and each makes the Worker write. The rate limits above stop accidents and casual abuse, not that. If it ever happens, the next step is a per-subscription daily cap on changed alerts (two columns on the row that is already written, so no extra cost), or moving to the paid plan.
+### Worst cases
+
+The [daily cap](#daily-cap-on-alert-changes) puts a ceiling on what one subscription can cost: 400 changes a day.
+
+**One misbehaving subscription, per day:**
+
+| How it spends its 400 changes | Rows written |
+|---|---|
+| One upload adding 400 alerts | about 1,200 (400 x 3, plus 1 for the insert statement and 1 for the subscription row) |
+| One upload removing 400 alerts | up to 1,201 |
+| 400 uploads of one alert each, the most expensive way (needs 200 minutes at the 2-a-minute limit) | about **2,000** (5 each: 3 for the alert, 1 for the insert statement, 1 for the subscription row) |
+
+So **one bad subscription costs at most about 2,000 rows a day, 2% of the free tier**, against about 80 for a normal one (25 times). Before the cap, nothing but the 2-a-minute limit stopped it, and each upload could rewrite 500 alerts: millions of rows a day. Refused uploads cost no writes, only reads.
+
+**The whole service:**
+
+| Scenario | Rows written a day | Free tier used |
+|---|---|---|
+| Normal: 600 daily active users, 40 new | ~66,000 | 66% |
+| One misbehaving subscription on top | up to +2,000 | +2% |
+| A bug in the app that sends every client into the loop | 600 x about 1,200+ = over 700,000 | **7 times over** |
+| The same bug in 30 of those 600 users (5%) | ~66,000 + 30 x 1,120 = ~100,000 | **at the limit** |
+| A deliberate attacker with 85 subscriptions | 85 x about 1,200 = ~100,000 | **at the limit** |
+
+What this means:
+
+- The cap makes **one bad client a rounding error**. It does not make **many bad clients** safe. A bug in the app released to everyone, or one that hits more than about 5% of users at once, can still use up the free tier in a day. Releasing client changes to the schedule upload carefully (and watching D1's row count after) is the real defence for that.
+- It does **not stop a deliberate attacker**. Subscribing needs no account: one address can create about 85 subscriptions in half an hour (3 a minute), and each can make one 400-alert upload, which is the whole day's budget. The cap and rate limits only make this take 30 minutes and some effort instead of a few requests. To really close it, the options are: put a challenge such as Cloudflare Turnstile in front of `POST /subscribe`; cap the number of new subscriptions a day for the whole service; or move to the paid Workers plan. None of those is done here.
+- When any of this happens the result is the same as below: the service returns `503` until 00:00 UTC.
 
 ### If the limit is hit
 

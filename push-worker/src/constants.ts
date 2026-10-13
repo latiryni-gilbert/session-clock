@@ -18,3 +18,9 @@ export const LAST_SEEN_REFRESH_MS = 24 * 60 * 60 * 1000
 // Sent alerts are kept this long (for debugging) before cleanup may delete them.
 export const SENT_ALERT_RETENTION_MS = 24 * 60 * 60 * 1000
 export const CLEANUP_BATCH_SIZE = 1000
+
+export const DAY_MS = 24 * 60 * 60 * 1000
+
+// The most alerts one subscription may have added + removed per UTC day. A first upload is about 150 and normal
+// days a few dozen, so this only stops a client stuck in a loop. Worth about 1,200 to 2,000 rows written a day.
+export const MAX_DAILY_ALERT_CHANGES = 400
