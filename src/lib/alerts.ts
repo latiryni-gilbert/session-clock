@@ -2,6 +2,8 @@ import { DateTime } from 'luxon'
 import type { AlertLead } from './alertSettings'
 import { getWindowOccurrence } from './convertWindow'
 import { formatDuration } from './formatTime'
+import { localizeEvent, type NewsEvent } from './newsEvents'
+import { newsAlertLabel } from './newsText'
 import type { PresetGroup } from './tradingWindow'
 import { getStorage, type StorageLike } from './windowSettings'
 
@@ -18,9 +20,12 @@ export const BANNER_LINGER_MS = 60_000
 export const FIRED_STORAGE_KEY = 'session-clock:alerts-fired'
 
 export interface DueAlert {
-  /** Identifies one occurrence of one window: the same occurrence always has the same key. */
+  /** Identifies one occurrence of one window (or one news event): the same occurrence always has the same key. */
   key: string
+  /** The window's id, or the news event's id when `kind` is "news". */
   windowId: string
+  /** "window" (the default) alerts that a window is about to open; "news" that a news event is about to happen. */
+  kind?: 'window' | 'news'
   /** Readable name, qualified by group when two windows share a name ("Forex London"). */
   label: string
   color: string
@@ -103,6 +108,46 @@ export function getDueAlerts(
   return due.sort((a, b) => a.openAtMs - b.openAtMs || a.label.localeCompare(b.label))
 }
 
+/** A news alert banner stays relevant this long after the event, then is treated as ended (and skipped by catch-up). */
+export const NEWS_EVENT_LINGER_MS = 15 * 60_000
+
+/**
+ * Which news-event alerts should be shown now. The same rules as `getDueAlerts`: an event is due when
+ * its alert time (event time minus `leadMinutes`) fell in `(since, now]`, it hasn't been shown, and it
+ * isn't over (an event counts as over `NEWS_EVENT_LINGER_MS` after it happens).
+ */
+export function getDueNewsAlerts(
+  events: readonly NewsEvent[],
+  leadMinutes: number,
+  now: Date,
+  fired: ReadonlyMap<string, number>,
+  since: Date,
+): DueAlert[] {
+  const nowMs = now.getTime()
+  const sinceMs = since.getTime()
+  const due: DueAlert[] = []
+  for (const event of events) {
+    const openAtMs = localizeEvent(event, 'UTC').at.toMillis()
+    const alertAtMs = openAtMs - leadMinutes * 60_000
+    const endAtMs = openAtMs + NEWS_EVENT_LINGER_MS
+    if (alertAtMs <= sinceMs || alertAtMs > nowMs || nowMs >= endAtMs) continue
+    const key = alertKey(event.id, openAtMs)
+    if (fired.has(key)) continue
+    due.push({
+      key,
+      windowId: event.id,
+      kind: 'news',
+      label: newsAlertLabel(event),
+      color: '#f43f5e',
+      alertAtMs,
+      openAtMs,
+      endAtMs,
+      leadMinutes,
+    })
+  }
+  return due.sort((a, b) => a.openAtMs - b.openAtMs)
+}
+
 /** Whether an alert is recent enough to play a sound (a late catch-up alert stays silent). */
 export function isFreshAlert(alert: DueAlert, now: Date): boolean {
   return now.getTime() - alert.alertAtMs <= SOUND_MAX_AGE_MS
@@ -117,6 +162,12 @@ const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'}`
  */
 export function bannerMessage(alert: DueAlert, now: Date): string {
   const nowMs = now.getTime()
+  if (alert.kind === 'news') {
+    // "CPI in 15 minutes", then "CPI is out now", then "CPI released 4 minutes ago"
+    if (nowMs < alert.openAtMs) return `${alert.label} in ${plural(Math.ceil((alert.openAtMs - nowMs) / 60_000), 'minute')}`
+    const minutes = Math.floor((nowMs - alert.openAtMs) / 60_000)
+    return minutes < 1 ? `${alert.label} is out now` : `${alert.label} released ${plural(minutes, 'minute')} ago`
+  }
   if (nowMs < alert.openAtMs) return `${alert.label} opens in ${plural(Math.ceil((alert.openAtMs - nowMs) / 60_000), 'minute')}`
   if (nowMs >= alert.endAtMs) return `${alert.label} has closed`
   const minutes = Math.floor((nowMs - alert.openAtMs) / 60_000)

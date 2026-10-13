@@ -1,5 +1,7 @@
 import { DateTime } from 'luxon'
+import { NEWS_CALENDAR } from '../config/newsEvents'
 import { getWindowOccurrence } from './convertWindow'
+import { getEventsOnLocalDate, type NewsEvent } from './newsEvents'
 import type { Holiday, TradingWindow } from './tradingWindow'
 
 /** A stretch of the local day, as fractions of it: 0 = midnight, 1 = the next midnight. */
@@ -68,4 +70,39 @@ export function getHourTicks(now: Date, zone: string, stepHours = 3): HourTick[]
     ticks.push({ label: String(hour).padStart(2, '0'), fraction: (at.toMillis() - startMs) / lengthMs })
   }
   return ticks
+}
+
+/** A news event placed on the viewer's local day. */
+export interface NewsMarker {
+  event: NewsEvent
+  /** When it happens, in the viewer's zone. */
+  at: DateTime
+  /** Position along the day, 0 (midnight) to 1. */
+  fraction: number
+  /** How to hang the label from the marker: centred, or pushed inward near either edge so it isn't cut off. */
+  align: 'start' | 'center' | 'end'
+  /** Labels of events close together alternate between two rows so they don't overlap. */
+  row: 0 | 1
+}
+
+/** Labels closer than this share-of-the-day apart go on different rows. */
+const LABEL_CROWDING = 0.08
+
+/** Today's news events (today in `zone`, at `now`) as markers along the timeline. */
+export function getNewsMarkers(now: Date, zone: string, events: readonly NewsEvent[] = NEWS_CALENDAR.events): NewsMarker[] {
+  const { startMs, lengthMs } = localDay(now, zone)
+  const localDate = DateTime.fromMillis(startMs, { zone }).toISODate()!
+  const markers: NewsMarker[] = []
+  for (const { event, at } of getEventsOnLocalDate(localDate, zone, events)) {
+    const fraction = (at.toMillis() - startMs) / lengthMs
+    const previous = markers.at(-1)
+    markers.push({
+      event,
+      at,
+      fraction,
+      align: fraction < 0.04 ? 'start' : fraction > 0.96 ? 'end' : 'center',
+      row: previous && fraction - previous.fraction < LABEL_CROWDING ? (previous.row === 0 ? 1 : 0) : 0,
+    })
+  }
+  return markers
 }

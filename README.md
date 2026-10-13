@@ -17,8 +17,13 @@ A web app that shows which trading sessions are open right now, and when the nex
 - **Presets:** Forex (Sydney, Tokyo, London, New York), NYSE regular hours, CME equity futures, and ICT killzones (Asian, London, New York AM, New York PM).
 - **Custom windows:** add, edit and delete your own, each with its own time zone, days and color. Show or hide any window or group.
 - **In-page alerts:** get a banner (and a quiet chime) 5, 15 or 30 minutes before a window opens. If the page was asleep, it catches up when you come back.
+- **US news events:** CPI, jobs report (NFP), PPI and FOMC rate decisions are marked on the timeline, and a "Next event" line under the clock counts down to the next one, with a link to the full calendar on ForexFactory. FOMC meetings that publish projections are noted. Switch it off, or get an alert 5, 15 or 30 minutes before, in the settings.
 - **Installable and offline:** install it like an app on your phone or computer. After the first visit it opens without a connection, and it asks before switching to a new version.
 - **Desktop notifications:** optional, and only asked for when you turn them on. They are sent when the tab is in the background.
+
+## News event data
+
+News events come from the official BLS (CPI, Employment Situation, PPI) and Federal Reserve (FOMC) schedules, USD events only, entered through 2027 in `src/config/newsEvents.ts`. Times are New York time and are converted to yours. Nothing is fetched from ForexFactory; the link just opens its calendar in a new tab. A test fails when the data gets within 60 days of running out, as a reminder to add the next year.
 
 ## Install it
 
