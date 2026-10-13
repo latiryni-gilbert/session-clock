@@ -47,6 +47,17 @@ jobs:
       - name: Test push worker
         run: npm test
 
+      # Migrations go first so the new code never runs against old tables. Wrangler records which ones have
+      # been applied, so only new files run. Migrations must therefore keep the currently deployed code working
+      # (add things; remove or rename in a later change), because the old code runs until the deploy below.
+      - name: Apply D1 migrations to the remote database
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: push-worker
+          command: d1 migrations apply DB --remote
+
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:

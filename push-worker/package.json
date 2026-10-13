@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
