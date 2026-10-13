@@ -147,3 +147,8 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Cloudflare Worker (push-worker/): local state, and local-only secrets that must never be committed
+.wrangler/
+.dev.vars
+.dev.vars.*

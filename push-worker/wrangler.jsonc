@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "session-clock-push",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // Served at https://session-clock-push.<your-account-subdomain>.workers.dev
+  "workers_dev": true,
+  // No account ID or secrets here: the deploy gets CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
+  // from environment variables. GIT_COMMIT_SHA below is only the local/default value; the deploy
+  // workflow overrides it with the real commit (wrangler deploy --var GIT_COMMIT_SHA:<sha>).
+  "vars": {
+    "GIT_COMMIT_SHA": "dev"
+  }
+}

@@ -1,0 +1,57 @@
+name: Deploy push worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'push-worker/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never run two deploys at once; a second one waits for the first to finish.
+concurrency:
+  group: deploy-push-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Test and deploy
+    # The manual "Run workflow" button lets you pick any branch; only main may be deployed.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: push-worker
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: push-worker/package-lock.json
+
+      - name: Install push worker dependencies
+        run: npm ci
+
+      - name: Type check push worker
+        run: npm run typecheck
+
+      - name: Test push worker
+        run: npm test
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: push-worker
+          # Injects the commit being deployed as GIT_COMMIT_SHA, which /health reports as "version".
+          command: deploy --var GIT_COMMIT_SHA:${{ github.sha }}
