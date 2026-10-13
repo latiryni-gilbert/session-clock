@@ -1,4 +1,5 @@
 import { DateTime } from 'luxon'
+import { getHoliday } from './holidays'
 import type { TradingWindow } from './tradingWindow'
 
 export interface WindowOccurrence {
@@ -19,7 +20,9 @@ function parseTime(value: string): { hour: number; minute: number } {
 /**
  * Returns the occurrence of `window` that STARTS on `date`, with its start and
  * end converted to `displayZone`. Returns null if the window does not start on
- * that weekday.
+ * that weekday, or if its holiday calendar says that day is a full closure.
+ * On an early-close day a same-day window ends at the calendar's early-close time
+ * instead (overnight windows are not shortened).
  *
  * `date` is a calendar date ("yyyy-MM-dd") in the window's home time zone.
  * A window whose end is earlier than or equal to its start ends on the next
@@ -38,8 +41,20 @@ export function getWindowOccurrence(
   if (!window.days.includes(day.weekday as TradingWindow['days'][number])) return null
 
   const start = parseTime(window.start)
-  const end = parseTime(window.end)
-  const overnight = end.hour * 60 + end.minute <= start.hour * 60 + start.minute
+  let end = parseTime(window.end)
+  const minutes = (t: { hour: number; minute: number }) => t.hour * 60 + t.minute
+  const overnight = minutes(end) <= minutes(start)
+
+  const holiday = window.holidays ? getHoliday(window.holidays, day.toISODate()!) : undefined
+  if (holiday?.type === 'closed') return null
+  if (holiday?.type === 'early-close' && !overnight) {
+    const early = parseTime(window.holidays!.earlyCloseTime)
+    if (minutes(early) < minutes(end)) {
+      // Closing at or before the open leaves no session at all.
+      if (minutes(early) <= minutes(start)) return null
+      end = early
+    }
+  }
   const endDay = overnight ? day.plus({ days: 1 }) : day
 
   const at = (d: DateTime, t: { hour: number; minute: number }) =>
