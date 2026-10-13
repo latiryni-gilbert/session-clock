@@ -39,3 +39,34 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # The push worker (push-worker/) is its own project with its own dependencies. It runs as a second job,
+  # in parallel, so a problem in one project doesn't hide a problem in the other.
+  push-worker:
+    name: Push worker (install, type check, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: push-worker
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: push-worker/package-lock.json
+
+      - name: Install push worker dependencies
+        run: npm ci
+
+      - name: Type check push worker
+        run: npm run typecheck
+
+      - name: Test push worker
+        run: npm test
