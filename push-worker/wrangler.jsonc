@@ -10,5 +10,14 @@
   // workflow overrides it with the real commit (wrangler deploy --var GIT_COMMIT_SHA:<sha>).
   "vars": {
     "GIT_COMMIT_SHA": "dev"
-  }
+  },
+  // The D1 database. The ID identifies the database; it is not a credential.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "session-clock-push",
+      "database_id": "20ee2d5d-e52f-496d-98dc-6f3579bf9891",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
