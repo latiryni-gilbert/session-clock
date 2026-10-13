@@ -1,6 +1,7 @@
 import { AlertBanners } from './components/AlertBanners'
 import { Settings } from './components/Settings'
 import { Timeline } from './components/Timeline'
+import { UpdatePrompt } from './components/UpdatePrompt'
 import { WindowList } from './components/WindowList'
 import { buildGroups } from './lib/customWindows'
 import { formatClock, getLocalTimeZone } from './lib/formatTime'
@@ -73,6 +74,7 @@ function App() {
       ) : (
         <p className="text-neutral-500">All windows are hidden. Open settings (the gear) to show some.</p>
       )}
+      <UpdatePrompt />
     </main>
   )
 }
