@@ -134,6 +134,37 @@ describe('Good Friday', () => {
   })
 })
 
+describe('early-close marker data', () => {
+  it('an early-close occurrence says which holiday shortened it; other occurrences do not', () => {
+    expect(getWindowOccurrence(nyse, '2026-11-27', NY)?.shortenedBy).toMatchObject({ name: 'Day after Thanksgiving', type: 'early-close' })
+    expect(getWindowOccurrence(nyse, '2026-11-25', NY)?.shortenedBy).toBeUndefined()
+    expect(getWindowOccurrence(find('forex-london'), '2026-11-27', NY)?.shortenedBy).toBeUndefined()
+  })
+
+  it('the status carries it, so the list can tag the row', () => {
+    expect(getWindowStatus(nyse, at('2026-11-27T10:00'), NY).shortenedBy?.name).toBe('Day after Thanksgiving')
+    expect(getWindowStatus(nyse, at('2026-11-25T17:00'), NY).shortenedBy?.name).toBe('Day after Thanksgiving') // next open is the early close
+    expect(getWindowStatus(nyse, at('2026-11-27T14:00'), NY).shortenedBy).toBeUndefined() // next open is Monday, a normal day
+  })
+
+  it('a timeline segment is flagged only where it really ends early', () => {
+    const [seg] = getTimelineSegments(nyse, at('2026-11-27T12:00'), NY)
+    expect(seg.earlyClose?.name).toBe('Day after Thanksgiving')
+    expect(getTimelineSegments(nyse, at('2026-11-25T12:00'), NY)[0].earlyClose).toBeUndefined()
+  })
+
+  it('in Tokyo the early close falls after local midnight: only the segment holding the end is flagged', () => {
+    const tokyo = 'Asia/Tokyo'
+    // The session runs 23:30 Fri 27 Nov to 03:00 Sat 28 Nov (Tokyo time).
+    const friday = getTimelineSegments(nyse, at('2026-11-27T12:00', tokyo), tokyo)
+    const saturday = getTimelineSegments(nyse, at('2026-11-28T12:00', tokyo), tokyo)
+    expect(friday.at(-1)).toMatchObject({ end: 1 })
+    expect(friday.at(-1)?.earlyClose).toBeUndefined() // just cut at midnight
+    expect(saturday[0].end).toBeCloseTo(3 / 24, 10)
+    expect(saturday[0].earlyClose?.name).toBe('Day after Thanksgiving')
+  })
+})
+
 describe('other effects of holidays', () => {
   it('no alert fires for a session that is not happening, but does for the early-close day', () => {
     const due = (iso: string) => {

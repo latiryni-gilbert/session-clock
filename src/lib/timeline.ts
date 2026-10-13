@@ -1,11 +1,13 @@
 import { DateTime } from 'luxon'
 import { getWindowOccurrence } from './convertWindow'
-import type { TradingWindow } from './tradingWindow'
+import type { Holiday, TradingWindow } from './tradingWindow'
 
 /** A stretch of the local day, as fractions of it: 0 = midnight, 1 = the next midnight. */
 export interface TimelineSegment {
   start: number
   end: number
+  /** Set when this segment ends where it does because of an early close (so the end can be marked). */
+  earlyClose?: Holiday
 }
 
 export interface HourTick {
@@ -41,7 +43,11 @@ export function getTimelineSegments(window: TradingWindow, now: Date, displayZon
     if (!occ) continue
     const from = Math.max(occ.start.toMillis(), startMs)
     const to = Math.min(occ.end.toMillis(), endMs)
-    if (to > from) segments.push({ start: (from - startMs) / lengthMs, end: (to - startMs) / lengthMs })
+    if (to > from) {
+      // Only mark the end if it is the real end of the session, not just where the day is cut at midnight.
+      const earlyClose = occ.shortenedBy && to === occ.end.toMillis() ? occ.shortenedBy : undefined
+      segments.push({ start: (from - startMs) / lengthMs, end: (to - startMs) / lengthMs, ...(earlyClose && { earlyClose }) })
+    }
   }
   return segments.sort((a, b) => a.start - b.start)
 }

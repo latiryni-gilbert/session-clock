@@ -1,12 +1,14 @@
 import { DateTime } from 'luxon'
 import { getHoliday } from './holidays'
-import type { TradingWindow } from './tradingWindow'
+import type { Holiday, TradingWindow } from './tradingWindow'
 
 export interface WindowOccurrence {
   /** When the window opens, expressed in the display time zone. */
   start: DateTime
   /** When the window closes, expressed in the display time zone. */
   end: DateTime
+  /** Set when an early-close holiday shortened this occurrence (its `end` is the early close). */
+  shortenedBy?: Holiday
 }
 
 const HH_MM = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -47,12 +49,14 @@ export function getWindowOccurrence(
 
   const holiday = window.holidays ? getHoliday(window.holidays, day.toISODate()!) : undefined
   if (holiday?.type === 'closed') return null
+  let shortenedBy: Holiday | undefined
   if (holiday?.type === 'early-close' && !overnight) {
     const early = parseTime(window.holidays!.earlyCloseTime)
     if (minutes(early) < minutes(end)) {
       // Closing at or before the open leaves no session at all.
       if (minutes(early) <= minutes(start)) return null
       end = early
+      shortenedBy = holiday
     }
   }
   const endDay = overnight ? day.plus({ days: 1 }) : day
@@ -63,7 +67,7 @@ export function getWindowOccurrence(
       { zone: window.timeZone },
     ).setZone(displayZone)
 
-  const result = { start: at(day, start), end: at(endDay, end) }
+  const result: WindowOccurrence = { start: at(day, start), end: at(endDay, end), ...(shortenedBy && { shortenedBy }) }
   if (!result.start.isValid || !result.end.isValid) {
     throw new Error(`Invalid time zone "${window.timeZone}" or "${displayZone}"`)
   }
