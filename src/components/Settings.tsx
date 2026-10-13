@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ALERT_LEADS, getAlertLead, isAlertLead, type AlertLead, type AlertSettings } from '../lib/alertSettings'
 import { alertSound } from '../lib/alertSound'
+import type { NewsSettings } from '../lib/newsSettings'
 import {
   areNotificationsSupported,
   getNotificationPermission,
@@ -35,6 +36,9 @@ interface Props {
   onNotificationsChange: (on: boolean) => void
   /** Showing a notification failed this session (e.g. Chrome on Android), so treat them as unavailable. */
   notificationsFailed: boolean
+  news: NewsSettings
+  onNewsEnabledChange: (enabled: boolean) => void
+  onNewsAlertLeadChange: (lead: AlertLead | null) => void
   detectedTimeZone: string
   saveFailed: boolean
 }
@@ -58,6 +62,9 @@ export function Settings({
   onSoundChange,
   onNotificationsChange,
   notificationsFailed,
+  news,
+  onNewsEnabledChange,
+  onNewsAlertLeadChange,
   detectedTimeZone,
   saveFailed,
 }: Props) {
@@ -300,6 +307,45 @@ export function Settings({
                         Notifications aren’t available here. In-page alerts still work.
                       </p>
                     )}
+                  </section>
+                  <section>
+                    <h3 className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">News events</h3>
+                    <div className="mt-1 flex items-center justify-between gap-3 py-1">
+                      <div className="min-w-0">
+                        <p>News events</p>
+                        <p className="text-xs text-neutral-500">
+                          US CPI, jobs report, PPI and FOMC decisions: markers on the timeline and a &ldquo;Next event&rdquo; line.
+                        </p>
+                      </div>
+                      <Switch
+                        state={news.enabled ? 'on' : 'off'}
+                        label="News events"
+                        onToggle={() => onNewsEnabledChange(!news.enabled)}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 pb-1">
+                      <label htmlFor="alert-news" className={`text-xs ${news.enabled ? 'text-neutral-500' : 'text-neutral-600'}`}>
+                        Alert
+                      </label>
+                      <select
+                        id="alert-news"
+                        aria-label="Alert for news events"
+                        disabled={!news.enabled}
+                        value={news.alertLead ?? 'off'}
+                        onChange={(e) => {
+                          const v = Number(e.target.value)
+                          onNewsAlertLeadChange(isAlertLead(v) ? v : null)
+                        }}
+                        className="h-9 rounded-md border border-neutral-700 bg-neutral-950 px-2 text-sm text-neutral-200 [color-scheme:dark] focus-visible:outline-2 focus-visible:outline-neutral-400 disabled:opacity-50"
+                      >
+                        <option value="off">Off</option>
+                        {ALERT_LEADS.map((m) => (
+                          <option key={m} value={m}>
+                            {m} minutes before
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </section>
                   {groups.map((group) => {
                     const state = getGroupState(disabled, group)

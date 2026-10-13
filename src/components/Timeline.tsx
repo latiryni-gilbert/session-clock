@@ -1,4 +1,5 @@
-import { getHourTicks, getNowFraction, getTimelineSegments } from '../lib/timeline'
+import { newsMarkerTitle } from '../lib/newsText'
+import { getHourTicks, getNowFraction, getTimelineSegments, type NewsMarker } from '../lib/timeline'
 import type { PresetGroup } from '../lib/tradingWindow'
 import { getWindowStatus } from '../lib/windowStatus'
 
@@ -6,6 +7,8 @@ interface Props {
   groups: PresetGroup[]
   now: Date
   timeZone: string
+  /** Today's news events, as markers. Empty (the default) draws none. */
+  news?: NewsMarker[]
 }
 
 const pct = (fraction: number) => `${fraction * 100}%`
@@ -13,15 +16,17 @@ const pct = (fraction: number) => `${fraction * 100}%`
 // Width of the short-label column (w-14 + mr-2 = 4rem), used to line up the overlay and hour labels.
 const LABEL_COLUMN = '4rem'
 
-export function Timeline({ groups, now, timeZone }: Props) {
+export function Timeline({ groups, now, timeZone, news = [] }: Props) {
   const ticks = getHourTicks(now, timeZone)
   // Segments are worked out once per window; any that end early because of a market holiday get a marker.
   const segmentsById = new Map(groups.flatMap((g) => g.windows).map((w) => [w.id, getTimelineSegments(w, now, timeZone)]))
   const hasEarlyClose = [...segmentsById.values()].some((segs) => segs.some((s) => s.earlyClose))
+  // Room above the rows for the news labels (one line, or two when events are close together).
+  const labelZone = news.length === 0 ? 0 : news.some((m) => m.row === 1) ? 30 : 18
 
   return (
     <section aria-label="Today's timeline" className="w-full max-w-2xl">
-      <div className="relative">
+      <div className="relative" style={{ paddingTop: labelZone }}>
         {/* Rows stay in fixed preset order so bars don't jump as statuses change; only the list below re-sorts. */}
         <div className="space-y-3">
           {groups.map((group) => (
@@ -69,18 +74,45 @@ export function Timeline({ groups, now, timeZone }: Props) {
 
         {/* Overlay aligned with the bar tracks (skips the label column). */}
         <div className="pointer-events-none absolute inset-y-0 right-0" style={{ left: LABEL_COLUMN }}>
-          {ticks.map((tick) => (
+          {/* Lines start below the news labels so nothing crosses them. */}
+          <div className="absolute inset-x-0 bottom-0" style={{ top: labelZone }}>
+            {ticks.map((tick) => (
+              <div
+                key={tick.label}
+                className="absolute inset-y-0 w-px bg-neutral-800/70"
+                style={{ left: pct(tick.fraction) }}
+              />
+            ))}
+            {/* News events: thin dashed red lines, drawn before (so under) the "now" line. */}
+            {news.map((m) => (
+              <div
+                key={m.event.id}
+                aria-hidden
+                className="absolute inset-y-0 w-0 border-l border-dashed border-rose-400"
+                style={{ left: pct(m.fraction) }}
+              />
+            ))}
             <div
-              key={tick.label}
-              className="absolute inset-y-0 w-px bg-neutral-800/70"
-              style={{ left: pct(tick.fraction) }}
+              className="absolute -inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]"
+              style={{ left: pct(getNowFraction(now, timeZone)) }}
+              aria-label="Now"
             />
+          </div>
+          {/* The labels sit above the rows. */}
+          {news.map((m) => (
+            <span
+              key={m.event.id}
+              title={newsMarkerTitle(m)}
+              className="pointer-events-auto absolute whitespace-nowrap text-[10px] font-semibold leading-none text-rose-300"
+              style={{
+                left: pct(m.fraction),
+                top: m.row * 12,
+                transform: `translateX(${m.align === 'center' ? '-50%' : m.align === 'end' ? '-100%' : '0'})`,
+              }}
+            >
+              {m.event.shortName}
+            </span>
           ))}
-          <div
-            className="absolute -inset-y-1 w-0.5 -translate-x-1/2 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.6)]"
-            style={{ left: pct(getNowFraction(now, timeZone)) }}
-            aria-label="Now"
-          />
         </div>
       </div>
 
