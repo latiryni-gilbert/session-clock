@@ -13,8 +13,11 @@ export function getHoliday(calendar: HolidayCalendar, date: string): Holiday | u
   return index.get(date)
 }
 
-/** Whole days from `now` (in the calendar's time zone) until the last date the calendar covers. Negative once it has passed. */
-export function daysUntilCoverageEnds(calendar: HolidayCalendar, now: DateTime = DateTime.now()): number {
+/** Whole days from `now` (in the calendar's time zone) until the last date the calendar covers. Negative once it has passed. Works for any calendar with a time zone and a `coversThrough` date. */
+export function daysUntilCoverageEnds(
+  calendar: Pick<HolidayCalendar, 'timeZone' | 'coversThrough'>,
+  now: DateTime = DateTime.now(),
+): number {
   const end = DateTime.fromISO(calendar.coversThrough, { zone: calendar.timeZone }).startOf('day')
   return Math.round(end.diff(now.setZone(calendar.timeZone).startOf('day'), 'days').days)
 }
