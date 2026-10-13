@@ -1,10 +1,45 @@
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    VitePWA({
+      // "prompt": a new version waits until the user chooses to reload (see UpdatePrompt), it never swaps in silently.
+      registerType: 'prompt',
+      injectRegister: false, // src/main.tsx registers the worker itself
+      includeAssets: ['favicon.svg', 'favicon.ico', 'apple-touch-icon.png'],
+      manifest: {
+        id: '/',
+        name: 'Session Clock',
+        short_name: 'Sessions',
+        description: 'Which trading sessions are open right now, in your local time.',
+        start_url: '/',
+        scope: '/',
+        display: 'standalone',
+        orientation: 'any',
+        background_color: '#0a0a0a',
+        theme_color: '#0a0a0a',
+        categories: ['finance', 'productivity'],
+        lang: 'en',
+        icons: [
+          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+      workbox: {
+        // Everything the app needs is a static file, so cache it all (icons included) for offline use.
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
+        navigateFallback: 'index.html',
+        cleanupOutdatedCaches: true,
+      },
+    }),
+  ],
   test: {
     // Two projects so the existing logic tests keep running in plain Node while component
     // tests (*.test.tsx) get a browser-like DOM.
