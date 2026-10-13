@@ -1,5 +1,6 @@
 import { DateTime } from 'luxon'
 import { formatTimeRange } from '../lib/formatTime'
+import { closedTodayNote, formatEarlyCloseTag, tomorrowNote } from '../lib/holidayText'
 import type { PresetGroup, TradingWindow } from '../lib/tradingWindow'
 import { sortWindowsByStatus, statusLabel, type WindowStatus } from '../lib/windowStatus'
 
@@ -19,6 +20,11 @@ function WindowRow({
   const farAway = status.kind === 'upcoming' && status.opensInMs > 24 * 60 * 60 * 1000
   const reference = farAway ? status.start : DateTime.fromJSDate(now, { zone: timeZone })
   const times = formatTimeRange(status.start, status.end, reference)
+  // Market holidays: a closure today, a shortened session (the one shown in this row), a heads-up for tomorrow.
+  const closedNote = closedTodayNote(window, now)
+  const earlyTag = status.shortenedBy ? formatEarlyCloseTag(status.end) : null
+  const tomorrow = tomorrowNote(window, now, timeZone)
+  const lines = 2 + (closedNote ? 1 : 0) + (tomorrow ? 1 : 0)
 
   return (
     <li
@@ -30,8 +36,8 @@ function WindowRow({
     >
       <span
         aria-hidden
-        className={`row-span-2 size-3 rounded-full ${active ? 'ring-4 ring-emerald-500/30' : 'opacity-60'}`}
-        style={{ backgroundColor: window.color }}
+        className={`size-3 self-center rounded-full ${active ? 'ring-4 ring-emerald-500/30' : 'opacity-60'}`}
+        style={{ backgroundColor: window.color, gridRow: `span ${lines}` }}
       />
       <p className={`truncate font-medium ${active ? 'text-white' : 'text-neutral-200'}`}>{window.name}</p>
       <p
@@ -41,10 +47,17 @@ function WindowRow({
       >
         {statusLabel(status)}
       </p>
+      {closedNote && <p className="col-span-2 text-sm font-medium text-amber-300">{closedNote}</p>}
       {/* Spans the name and status columns so the range never wraps, even on phones. */}
-      <p className="col-span-2 whitespace-nowrap font-mono text-xs tabular-nums text-neutral-500 sm:text-sm">
-        {times}
-      </p>
+      <div className="col-span-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <p className="whitespace-nowrap font-mono text-xs tabular-nums text-neutral-500 sm:text-sm">{times}</p>
+        {earlyTag && (
+          <span className="whitespace-nowrap rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-300">
+            {earlyTag}
+          </span>
+        )}
+      </div>
+      {tomorrow && <p className="col-span-2 text-xs text-neutral-400">{tomorrow}</p>}
     </li>
   )
 }
