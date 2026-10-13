@@ -35,3 +35,5 @@ The workflow needs two repository secrets (Settings > Secrets and variables > Ac
 Neither is stored in any file. The deploy passes the commit being deployed as the `GIT_COMMIT_SHA` variable (`wrangler deploy --var GIT_COMMIT_SHA:<sha>`), which is what `/health` reports as `version`. The default in `wrangler.jsonc` (`"dev"`) is only used locally.
 
 After the first deploy the Worker is at `https://session-clock-push.<your-account-subdomain>.workers.dev/health`. The subdomain is shown in the deploy log and under Workers & Pages in the Cloudflare dashboard.
+
+The workflow ends with a smoke test: it calls `<PUSH_WORKER_URL>/health` and fails unless the response is 200, `ok` is `true` and `version` equals the commit just deployed. It retries for about 30 seconds because a new deploy can take a moment to go live. Set the repository **variable** (not a secret) `PUSH_WORKER_URL` to the Worker's base URL, without `/health`.
