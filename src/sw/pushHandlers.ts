@@ -4,10 +4,13 @@
 export interface PushMessage {
   title: string
   body: string
+  /** Names the alert: a second notification with the same tag replaces the first instead of showing twice. */
+  tag?: string
 }
 
 const MAX_TITLE_CHARS = 100
 const MAX_BODY_CHARS = 300
+const MAX_TAG_CHARS = 100
 const ICON_PATH = 'pwa-192x192.png'
 
 /**
@@ -18,14 +21,17 @@ const ICON_PATH = 'pwa-192x192.png'
  */
 export const FALLBACK_MESSAGE: PushMessage = { title: 'Session Clock', body: 'Open Session Clock to see your alerts.' }
 
-/** The {title, body} the Worker sends, or null for anything else: no data, invalid JSON, wrong types, empty title. Never throws. */
+/** The {title, body, tag} the Worker sends (the tag is optional), or null for anything else: no data, invalid JSON, wrong types, empty title. Never throws. */
 export function parsePushMessage(data: Pick<PushMessageData, 'json'> | null | undefined): PushMessage | null {
   try {
     const parsed: unknown = data?.json()
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
-    const { title, body } = parsed as { title?: unknown; body?: unknown }
+    const { title, body, tag } = parsed as { title?: unknown; body?: unknown; tag?: unknown }
     if (typeof title !== 'string' || typeof body !== 'string' || title.trim() === '') return null
-    return { title: title.slice(0, MAX_TITLE_CHARS), body: body.slice(0, MAX_BODY_CHARS) }
+    const message: PushMessage = { title: title.slice(0, MAX_TITLE_CHARS), body: body.slice(0, MAX_BODY_CHARS) }
+    // A tag that isn't a non-empty string is ignored (the notification still shows, untagged).
+    if (typeof tag === 'string' && tag !== '') message.tag = tag.slice(0, MAX_TAG_CHARS)
+    return message
   } catch {
     return null
   }
@@ -33,11 +39,11 @@ export function parsePushMessage(data: Pick<PushMessageData, 'json'> | null | un
 
 /** Handles a `push` event: shows the notification, with the app icon. */
 export function handlePush(event: PushEvent, registration: ServiceWorkerRegistration): void {
-  const { title, body } = parsePushMessage(event.data) ?? FALLBACK_MESSAGE
+  const { title, body, tag } = parsePushMessage(event.data) ?? FALLBACK_MESSAGE
   event.waitUntil(
     (async () => {
       try {
-        await registration.showNotification(title, { body, icon: new URL(ICON_PATH, registration.scope).href })
+        await registration.showNotification(title, { body, icon: new URL(ICON_PATH, registration.scope).href, ...(tag && { tag }) })
       } catch {
         // If the browser refuses (the permission was just revoked) there is nothing more to do.
       }

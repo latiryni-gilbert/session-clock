@@ -22,6 +22,33 @@ function registration(showNotification: (title: string, options?: NotificationOp
   return { reg: { scope: SCOPE, showNotification: show } as unknown as ServiceWorkerRegistration, show }
 }
 
+describe('the notification tag', () => {
+  it('is read from the push', () => {
+    expect(parsePushMessage(data({ title: 'London opens in 15 minutes', body: 'Session Clock', tag: 'alert-42' }))).toEqual({
+      title: 'London opens in 15 minutes',
+      body: 'Session Clock',
+      tag: 'alert-42',
+    })
+  })
+  it.each([[5], [''], [null], [{}], [['alert-1']]])('is left out when it is %j', (tag) => {
+    expect(parsePushMessage(data({ title: 'a', body: 'b', tag }))).toEqual({ title: 'a', body: 'b' })
+  })
+  it('is cut to a sensible length', () => {
+    expect(parsePushMessage(data({ title: 'a', body: 'b', tag: 'x'.repeat(500) }))!.tag).toHaveLength(100)
+  })
+  it('is passed to showNotification, so one alert never shows twice', () => {
+    const { reg, show } = registration()
+    handlePush({ data: data({ title: 'a', body: 'b', tag: 'alert-7' }), waitUntil: () => {} } as unknown as PushEvent, reg)
+    expect(show).toHaveBeenCalledWith('a', expect.objectContaining({ body: 'b', tag: 'alert-7' }))
+  })
+  it('is not set on a push without one, nor on the fallback notice', () => {
+    const { reg, show } = registration()
+    handlePush({ data: data({ title: 'a', body: 'b' }), waitUntil: () => {} } as unknown as PushEvent, reg)
+    handlePush({ data: null, waitUntil: () => {} } as unknown as PushEvent, reg)
+    for (const call of show.mock.calls) expect(call[1]).not.toHaveProperty('tag')
+  })
+})
+
 describe('parsePushMessage', () => {
   it('reads the {title, body} the Worker sends', () => {
     expect(parsePushMessage(data({ title: 'Session Clock', body: 'Background alerts are working.' }))).toEqual({
