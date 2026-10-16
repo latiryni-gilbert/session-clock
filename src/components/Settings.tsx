@@ -19,6 +19,7 @@ import {
   type DisabledIds,
 } from '../lib/windowSettings'
 import { ADD_WINDOW_FORM_ID, AddWindowForm } from './AddWindowForm'
+import { BackgroundAlerts } from './BackgroundAlerts'
 import { Switch } from './Switch'
 
 interface Props {
@@ -308,6 +309,7 @@ export function Settings({
                       </p>
                     )}
                   </section>
+                  <BackgroundAlerts />
                   <section>
                     <h3 className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">News events</h3>
                     <div className="mt-1 flex items-center justify-between gap-3 py-1">
