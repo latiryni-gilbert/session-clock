@@ -20,7 +20,7 @@ A web app that shows which trading sessions are open right now, and when the nex
 - **US news events:** CPI, jobs report (NFP), PPI and FOMC rate decisions are marked on the timeline, and a "Next event" line under the clock counts down to the next one, with a link to the full calendar on ForexFactory. FOMC meetings that publish projections are noted. Switch it off, or get an alert 5, 15 or 30 minutes before, in the settings.
 - **Installable and offline:** install it like an app on your phone or computer. After the first visit it opens without a connection, and it asks before switching to a new version.
 - **Desktop notifications:** optional, and only asked for when you turn them on. They are sent when the tab is in the background.
-- **Background alerts (beta):** turn them on in Settings to get notifications even when the app is closed. For now you can only send yourself a test notification. See [Background alerts](#background-alerts-beta).
+- **Background alerts (beta):** turn them on in Settings to get your session and news alerts as notifications even when the app is closed. See [Background alerts](#background-alerts-beta).
 
 ## News event data
 
@@ -68,10 +68,15 @@ npm run build    # production build into dist/
 
 ## Background alerts (beta)
 
-Settings has a **Background alerts (beta)** section that uses Web Push, so a notification can reach you when Session Clock is closed. It talks to the push Worker in [`push-worker/`](push-worker/README.md). **This step covers subscribing and a test notification only**: scheduled alerts are not uploaded yet, so nothing is sent unless you press **Send test notification**.
+Settings has a **Background alerts (beta)** section that uses Web Push, so your alerts can reach you when Session Clock is closed. It talks to the push Worker in [`push-worker/`](push-worker/README.md): the app uploads its alert schedule there and the Worker sends each notification at the right time.
 
 - **Enable background alerts** asks for notification permission, subscribes this browser, and registers it with the Worker. The Worker gives back an id and a secret, which are kept in this browser's local storage and never shown or logged.
 - **Send test notification** has the Worker push "Session Clock: Background alerts are working." to this device. It is limited to one a minute. If the Worker says the subscription is gone, the device is reset and you are offered **Enable** again.
+- **The schedule.** While background alerts are on, the app works out every alert you have set for the next 14 days (session windows and news events, with holidays applied and windows you turned off skipped) using the same logic and wording as the in-app banners ("London opens in 15 minutes"), and uploads it with `PUT /schedule`. Alerts due in the next 2 minutes are left out so they can't arrive already in the past. At most 400 alerts are sent; with more, the horizon is cut back to the last whole stretch that fits and Settings says so. Settings shows **Scheduled through <date>** (the last day fully covered).
+- **When it uploads:** when you turn background alerts on; when the app opens, if the schedule changed or the last upload is over 24 hours old; and about 5 seconds after you change alert settings or windows. A fingerprint of the last accepted schedule is kept on the device, and an unchanged schedule is not sent again.
+- **Responses:** `429` and `503` are retried after the `Retry-After` the Worker gives (while the app is open, and not before then if you reopen it). `401`, `410` and `422` mean the Worker no longer knows the device, so background alerts are reset exactly like the test button does: you are offered **Enable** again. Any other error is tried again the next time you open the app.
+- **No double notifications.** While background alerts are on and an uploaded schedule reaches the present, the in-app desktop notification is not shown (the push covers it). The banner and sound stay. If nothing has been uploaded (for example the server was unreachable), the in-app notification is still used, so an alert is never dropped.
+- **Alerts last about 2 weeks after you last open the app**, because the schedule only reaches 14 days ahead. Open Session Clock now and then; every open tops it up.
 - **Turn off** removes the device from the Worker, drops the browser's subscription and clears the saved id and secret.
 - When Settings opens it checks the real situation: if you blocked notifications in the browser, or the browser dropped the subscription, it says so instead of showing "on".
 
@@ -81,7 +86,7 @@ Settings has a **Background alerts (beta)** section that uses Web Push, so a not
 
 1. A service worker doesn't run in `npm run dev`, so use a build: put `VITE_PUSH_WORKER_URL=<the Worker's address>` in `.env.local`, then `npm run build && npm run preview` and open the address it prints (a local `wrangler dev` Worker at `http://localhost:8787` works too).
 2. Open **Settings > Background alerts (beta)** and press **Enable background alerts**. Choose **Allow** when the browser asks. The section changes to "on".
-3. Press **Send test notification**. A "Session Clock" notification should appear within a few seconds, with the app icon. To see that it works without the page: press the button and straight away switch to another tab or app, or close the Session Clock tab. The notification should still arrive. Click it and it brings Session Clock to the front, or opens it.
+3. Set an alert on a window (Settings > Alerts), reopen Settings and check it says **Scheduled through …**. Then press **Send test notification**. A "Session Clock" notification should appear within a few seconds, with the app icon. To see that it works without the page: press the button and straight away switch to another tab or app, or close the Session Clock tab. The notification should still arrive. Click it and it brings Session Clock to the front, or opens it.
 4. Press the button again straight away: it asks you to wait a minute.
 5. Check the edge cases: in the browser's site settings set Notifications to **Block**, reopen Settings and it says alerts stopped. Then **Allow** it again and enable again. **Turn off** returns it to the start.
 6. Your operating system can hide notifications (Focus or Do Not Disturb on macOS, Focus assist on Windows): check that if nothing appears.
@@ -96,7 +101,7 @@ Settings has a **Background alerts (beta)** section that uses Web Push, so a not
 
 ## Limitations
 
-- **Scheduled alerts only work while the page is open.** Background alerts (beta) can currently send only a test notification; sending your real alerts in the background is not built yet.
+- **Without background alerts, alerts only work while the page is open.** With them on, alerts are scheduled 14 days ahead from the last time the app was opened, so a device not opened for about 2 weeks goes quiet until it is. The schedule is a snapshot: if a holiday calendar or news date is corrected in an app update, the corrected alerts are uploaded on the next open.
 - **Preset times are common conventions** and may differ from your source. Check them against your broker or exchange.
 - **NYSE holidays and early closes are included through 2027; CME holiday hours are not modeled yet.**
 - **Desktop notifications aren't available everywhere:** not on Android Chrome, and not on iPhone Safari outside a Home Screen app. In-page alerts still work there.

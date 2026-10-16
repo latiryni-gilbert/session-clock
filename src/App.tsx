@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { AlertBanners } from './components/AlertBanners'
 import { NextEvent } from './components/NextEvent'
 import { Settings } from './components/Settings'
@@ -6,7 +7,10 @@ import { UpdatePrompt } from './components/UpdatePrompt'
 import { WindowList } from './components/WindowList'
 import { buildGroups } from './lib/customWindows'
 import { formatClock, getLocalTimeZone } from './lib/formatTime'
+import { browserPushEnv } from './lib/push/browser'
+import { pushCoversAlerts, useScheduleSync } from './lib/push/useScheduleSync'
 import { getNewsMarkers } from './lib/timeline'
+import { NEWS_CALENDAR } from './config/newsEvents'
 import { useAlerts } from './lib/useAlerts'
 import { useNewsSettings } from './lib/useNewsSettings'
 import { useNow } from './lib/useNow'
@@ -17,6 +21,7 @@ const timeZone = getLocalTimeZone()
 
 function App() {
   const now = useNow()
+  const [pushEnv] = useState(browserPushEnv)
   const {
     custom,
     disabled,
@@ -37,7 +42,11 @@ function App() {
   const groups = applySettings(allGroups, disabled)
   // Only windows that are switched on raise alerts.
   // News events raise alerts only while the news switch is on.
-  const { banners, dismiss, notificationsFailed } = useAlerts(groups, alerts, now, news.enabled ? news.alertLead : null)
+  const newsLead = news.enabled ? news.alertLead : null
+  // Background alerts: the schedule is uploaded to the push Worker. While it covers now, the Worker's pushes show the
+  // system notifications, so the in-app ones are skipped (the banner and sound stay).
+  const { status: pushStatus, onPushChange } = useScheduleSync({ env: pushEnv, groups, alerts, newsLead, events: NEWS_CALENDAR.events })
+  const { banners, dismiss, notificationsFailed } = useAlerts(groups, alerts, now, newsLead, pushCoversAlerts(pushStatus, now.getTime()))
   const newsMarkers = news.enabled ? getNewsMarkers(now, timeZone) : []
 
   return (
@@ -61,6 +70,9 @@ function App() {
         onNewsEnabledChange={setNewsEnabled}
         onNewsAlertLeadChange={setNewsAlertLead}
         saveFailed={saveFailed || newsSaveFailed}
+        pushEnv={pushEnv}
+        pushStatus={pushStatus}
+        onPushChange={onPushChange}
       />
       <AlertBanners banners={banners} now={now} onDismiss={dismiss} />
       <header className="flex flex-col items-center gap-3 text-center">

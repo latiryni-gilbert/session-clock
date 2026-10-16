@@ -1,6 +1,6 @@
 # session-clock-push
 
-A small [Cloudflare Worker](https://developers.cloudflare.com/workers/) for Session Clock's push notifications. Today it **stores** push subscriptions and their scheduled alerts in a [D1](https://developers.cloudflare.com/d1/) database, and it can **send Web Push notifications**: a test notification on request, and, from a cron trigger that runs every minute, the alerts that have come due (see [Scheduler](#scheduler)). The web app does not upload schedules yet, so for now there is nothing for the scheduler to send.
+A small [Cloudflare Worker](https://developers.cloudflare.com/workers/) for Session Clock's push notifications. Today it **stores** push subscriptions and their scheduled alerts in a [D1](https://developers.cloudflare.com/d1/) database, and it can **send Web Push notifications**: a test notification on request, and, from a cron trigger that runs every minute, the alerts that have come due (see [Scheduler](#scheduler)). The web app uploads its alert schedule (14 days ahead) with `PUT /schedule`; the page reads `Retry-After` from the `429` and `503` answers, which is why CORS responses expose it.
 
 It is separate from the web app: its own `package.json`, TypeScript config and tests, and nothing in the app imports it.
 

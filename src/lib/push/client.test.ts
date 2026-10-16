@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fetchPublicKey, registerSubscription, removeSubscription, sendTestPush } from './client'
+import { fetchPublicKey, parseRetryAfter, registerSubscription, removeSubscription, sendTestPush, uploadSchedule } from './client'
 
 const BASE = 'https://push.example.workers.dev'
 const account = { id: 'the-id', secret: 'the-secret' }
@@ -112,4 +112,51 @@ describe('failures', () => {
     for (const spy of spies) expect(spy).not.toHaveBeenCalled()
     vi.restoreAllMocks()
   })
+})
+
+describe('uploadSchedule', () => {
+  const alerts = [{ fireAt: '2026-11-24T06:45:00.000Z', title: 'London opens in 15 minutes', body: 'Session Clock' }]
+
+  it('PUTs the id, secret and alerts as JSON to /schedule', async () => {
+    const f = fetching(reply(200, { ok: true }))
+    expect(await uploadSchedule(BASE, account, alerts, f)).toEqual({ ok: true })
+    expect(f).toHaveBeenCalledWith(
+      `${BASE}/schedule`,
+      expect.objectContaining({ method: 'PUT', credentials: 'omit', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'the-id', secret: 'the-secret', alerts }) }),
+    )
+  })
+
+  it.each([
+    [401, 'unauthorized'],
+    [410, 'gone'],
+    [422, 'gone'],
+    [429, 'rate-limited'],
+    [503, 'unavailable'],
+    [502, 'bad-gateway'],
+    [400, 'error'],
+    [409, 'error'],
+    [500, 'error'],
+  ])('maps %i to %s', async (status, reason) => {
+    expect(await uploadSchedule(BASE, account, alerts, fetching(reply(status)))).toEqual({ ok: false, reason })
+  })
+
+  it('passes on Retry-After from a 429 or 503', async () => {
+    const r = (status: number, value: string) => new Response(null, { status, headers: { 'retry-after': value } })
+    expect(await uploadSchedule(BASE, account, alerts, fetching(r(429, '60')))).toEqual({ ok: false, reason: 'rate-limited', retryAfterSeconds: 60 })
+    expect(await uploadSchedule(BASE, account, alerts, fetching(r(503, '7200')))).toEqual({ ok: false, reason: 'unavailable', retryAfterSeconds: 7200 })
+  })
+
+  it('reports a network failure', async () => {
+    expect(await uploadSchedule(BASE, account, alerts, fetching(new TypeError('offline')))).toEqual({ ok: false, reason: 'network' })
+  })
+})
+
+describe('parseRetryAfter', () => {
+  it.each([
+    ['60', 60],
+    [' 5 ', 5],
+    ['0', 0],
+    ['999999999', 86_400], // capped at a day
+  ])('reads %j as %i seconds', (value, seconds) => expect(parseRetryAfter(value)).toBe(seconds))
+  it.each([[null], [undefined], [''], ['soon'], ['-5'], ['1.5'], ['Wed, 21 Oct 2026 07:28:00 GMT']])('ignores %j', (value) => expect(parseRetryAfter(value)).toBeUndefined())
 })

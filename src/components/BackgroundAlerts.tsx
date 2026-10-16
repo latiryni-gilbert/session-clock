@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { browserPushEnv, type PushEnv } from '../lib/push/browser'
 import type { FailureReason } from '../lib/push/client'
+import { formatScheduledThrough } from '../lib/push/scheduleText'
+import type { ScheduleStatus } from '../lib/push/useScheduleSync'
 import {
   detectPushState,
   enableBackgroundAlerts,
@@ -8,12 +10,17 @@ import {
   turnOffBackgroundAlerts,
   type EnableFailure,
   type OffNote,
+  type PushChange,
   type PushState,
 } from '../lib/push/controller'
 
 interface Props {
   /** The browser pieces to use. Tests pass fakes; the app uses the real browser. */
   env?: PushEnv
+  /** What the schedule upload did; the app owns it because it runs while Settings is closed. */
+  schedule?: ScheduleStatus
+  /** Told whenever background alerts turn on, off or are reset here. */
+  onChange?: PushChange
 }
 
 interface Message {
@@ -58,13 +65,17 @@ const primaryButton =
  * Settings section for background alerts (Web Push). For now it can turn them on, send a test notification, and
  * turn them off. Renders nothing at all unless VITE_PUSH_WORKER_URL is set.
  */
-export function BackgroundAlerts({ env: provided }: Props) {
+export function BackgroundAlerts({ env: provided, schedule, onChange }: Props) {
   const [env] = useState(() => provided ?? browserPushEnv())
   const [state, setState] = useState<PushState | 'checking'>('checking')
   const [busy, setBusy] = useState<'enable' | 'test' | 'off' | null>(null)
   const [message, setMessage] = useState<Message | null>(null)
   // Set at once (state is not), so two taps in the same moment still run one action.
   const working = useRef(false)
+  const onChangeRef = useRef(onChange)
+  useEffect(() => {
+    onChangeRef.current = onChange
+  })
 
   // What is the situation right now? Looked up whenever the section appears (each time Settings opens), so a
   // permission the person revoked in the browser, or a subscription the browser dropped, shows up as it is.
@@ -72,7 +83,9 @@ export function BackgroundAlerts({ env: provided }: Props) {
     if (!env.workerUrl) return
     let cancelled = false
     void detectPushState(env).then((detected) => {
-      if (!cancelled) setState(detected)
+      if (cancelled) return
+      setState(detected)
+      onChangeRef.current?.(detected, 'detected')
     })
     return () => {
       cancelled = true
@@ -81,6 +94,12 @@ export function BackgroundAlerts({ env: provided }: Props) {
 
   if (!env.workerUrl) return null
   const current = state === 'checking' ? null : state
+  // A sync found the Worker no longer knows this device; the app has already reset it.
+  const resetNote = schedule?.reset
+    ? schedule.reset === 'unauthorized'
+      ? 'The alerts server no longer recognises this device, so background alerts were reset. Turn them on again.'
+      : 'This device’s alert subscription has expired, so background alerts were reset. Turn them on again.'
+    : null
 
   // Called straight from the tap: enableBackgroundAlerts asks for permission before anything else.
   const enable = async () => {
@@ -93,6 +112,7 @@ export function BackgroundAlerts({ env: provided }: Props) {
     setBusy(null)
     if (result.ok) {
       setState({ kind: 'on' })
+      onChange?.({ kind: 'on' }, 'enabled')
       setMessage({ tone: 'success', text: 'Turned on. Send a test notification to check that it works.' })
     } else if (result.reason === 'permission-denied') {
       setState({ kind: 'blocked', hadAccount: false })
@@ -116,6 +136,7 @@ export function BackgroundAlerts({ env: provided }: Props) {
     } else if (result.reset) {
       // The Worker dropped this device; it has been reset, so offer to start over.
       setState({ kind: 'off' })
+      onChange?.({ kind: 'off' }, 'test')
       setMessage({
         tone: 'error',
         text:
@@ -137,6 +158,7 @@ export function BackgroundAlerts({ env: provided }: Props) {
     working.current = false
     setBusy(null)
     setState({ kind: 'off' })
+    onChange?.({ kind: 'off' }, 'off')
     setMessage(
       result.serverRemoved && result.cleared
         ? { tone: 'success', text: 'Background alerts are off.' }
@@ -158,7 +180,7 @@ export function BackgroundAlerts({ env: provided }: Props) {
       <h3 id="background-alerts-heading" className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">
         Background alerts (beta)
       </h3>
-      <p className="mt-1 text-xs text-neutral-500">Get notified even when Session Clock is closed. For now you can only send a test notification.</p>
+      <p className="mt-1 text-xs text-neutral-500">Get your session and news alerts as notifications even when Session Clock is closed.</p>
 
       {current?.kind === 'unsupported' && <p className="mt-2 text-sm text-neutral-500">Background alerts aren’t supported in this browser.</p>}
       {current?.kind === 'needs-home-screen' &&
@@ -168,7 +190,7 @@ export function BackgroundAlerts({ env: provided }: Props) {
 
       {current?.kind === 'off' && (
         <>
-          {current.note && note(OFF_NOTES[current.note])}
+          {resetNote ? note(resetNote) : current.note && note(OFF_NOTES[current.note])}
           <div className="mt-2">
             <button type="button" className={primaryButton} disabled={busy !== null} aria-busy={busy === 'enable'} onClick={() => void enable()}>
               {busy === 'enable' ? 'Enabling…' : 'Enable background alerts'}
@@ -180,6 +202,7 @@ export function BackgroundAlerts({ env: provided }: Props) {
       {current?.kind === 'on' && (
         <>
           <p className="mt-2 text-sm text-emerald-300">Background alerts are on for this device.</p>
+          {schedule && <ScheduleNotes schedule={schedule} />}
           <div className="mt-2 flex flex-wrap gap-2">
             <button type="button" className={button} disabled={busy !== null} aria-busy={busy === 'test'} onClick={() => void sendTest()}>
               {busy === 'test' ? 'Sending…' : 'Send test notification'}
@@ -202,5 +225,24 @@ export function BackgroundAlerts({ env: provided }: Props) {
         </p>
       )}
     </section>
+  )
+}
+
+function ScheduleNotes({ schedule }: { schedule: ScheduleStatus }) {
+  return (
+    <div className="mt-1 space-y-1 text-xs text-neutral-400">
+      {schedule.throughMs !== null ? <p>Scheduled through {formatScheduledThrough(schedule.throughMs)}.</p> : <p>Your alerts haven’t been scheduled yet.</p>}
+      {schedule.shortened && (
+        <p className="text-amber-300">You have a lot of alerts, so only the nearest are scheduled. More are added each time you open the app.</p>
+      )}
+      {schedule.problem && (
+        <p className="text-amber-300">
+          {schedule.problem === 'retry-later'
+            ? 'The alerts server asked us to wait, so your latest changes will be sent shortly.'
+            : 'Couldn’t send your alerts to the server. It will try again the next time you open the app.'}
+        </p>
+      )}
+      <p>Alerts continue for about 2 weeks after you last open Session Clock. Open it now and then to keep them going.</p>
+    </div>
   )
 }
