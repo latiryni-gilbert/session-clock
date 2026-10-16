@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { env } from 'cloudflare:workers'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fromBase64Url, toBase64Url, utf8 } from '../src/base64url'
-import { encryptPayload, isKnownPushService, MAX_PAYLOAD_BYTES } from '../src/webpush'
-import { decryptWebPush } from './webpush-helpers'
+import { encryptPayload, isKnownPushService, MAX_PAYLOAD_BYTES, sendWebPush } from '../src/webpush'
+import { decryptWebPush, makeBrowser, mockPushService } from './webpush-helpers'
 
 type Bytes = Uint8Array<ArrayBuffer>
 const bytes = (b64url: string) => fromBase64Url(b64url)! as Bytes
@@ -127,4 +128,35 @@ describe('isKnownPushService', () => {
     'not a url',
     '',
   ])('refuses %j', (url) => expect(isKnownPushService(url)).toBe(false))
+})
+
+describe('the Topic header', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  async function sendWithTopic(topic: string | undefined) {
+    const browser = await makeBrowser()
+    const push = mockPushService()
+    const result = await sendWebPush(env, { endpoint: browser.subscription.endpoint, ...browser.subscription.keys }, utf8('x'), { ttl: 60, topic })
+    return { result, topic: push.calls[0]?.headers.get('topic') ?? null }
+  }
+
+  it.each(['alert-1', 'alert-123456789', 'A_b-9', 'x'.repeat(32)])('is sent when it is %s', async (topic) => {
+    expect(await sendWithTopic(topic)).toEqual({ result: { kind: 'sent' }, topic })
+  })
+
+  it.each([
+    ['too long (33 characters)', 'x'.repeat(33)],
+    ['empty', ''],
+    ['with a space', 'alert 1'],
+    ['with a slash', 'alert/1'],
+    ['with a colon', 'alert:1'],
+    ['with a non-ASCII character', 'alert-é'],
+    ['with a newline', 'alert-1\nx-injected: yes'],
+  ])('is left out when it is %s, and the push still goes out', async (_name, topic) => {
+    expect(await sendWithTopic(topic)).toEqual({ result: { kind: 'sent' }, topic: null })
+  })
+
+  it('is left out when none is given', async () => {
+    expect(await sendWithTopic(undefined)).toEqual({ result: { kind: 'sent' }, topic: null })
+  })
 })

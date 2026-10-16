@@ -108,7 +108,15 @@ export interface PushOptions {
   /** How long, in seconds, the push service may hold the message while the device is offline. */
   ttl: number
   urgency?: 'very-low' | 'low' | 'normal' | 'high'
+  /**
+   * A message with the same topic replaces one the push service is still holding for the device (RFC 8030), so a
+   * retry of a push that did get through can't leave two waiting. Up to 32 characters of A-Z a-z 0-9 - _ ; anything
+   * else is ignored.
+   */
+  topic?: string
 }
+
+const TOPIC = /^[A-Za-z0-9_-]{1,32}$/
 
 const PUSH_TIMEOUT_MS = 8000
 
@@ -151,6 +159,7 @@ export async function sendWebPush(env: PushEnv, target: PushTarget, payload: Uin
         'content-type': 'application/octet-stream',
         ttl: String(options.ttl),
         urgency: options.urgency ?? 'normal',
+        ...(options.topic !== undefined && TOPIC.test(options.topic) ? { topic: options.topic } : {}),
       },
       body,
       // Never follow a redirect: it could lead anywhere.

@@ -29,3 +29,26 @@ export const MAX_DAILY_ALERT_CHANGES = 400
 export const TEST_PUSH_TITLE = 'Session Clock'
 export const TEST_PUSH_BODY = 'Background alerts are working.'
 export const TEST_PUSH_TTL_SECONDS = 60
+
+// --- The scheduler (the cron trigger that sends due alerts) ---
+
+// An alert that is later than this when the scheduler finds it is skipped and deleted: a late session alert misleads.
+export const LATE_LIMIT_MS = 10 * 60 * 1000
+
+// How many pushes one run sends. The free plan allows about 10 ms of CPU per run and each push costs about
+// 1 ms of encryption plus the request and the delete after it, so 3 leaves a wide margin (see README.md).
+// `MAX_PUSHES_PER_RUN` in wrangler.jsonc overrides it, up to the limit below: a run makes at most 2 + 2N database
+// queries and push requests, and the free plan allows 50, so N = 20 (42) is as high as it may go.
+export const DEFAULT_PUSHES_PER_RUN = 3
+export const MAX_PUSHES_PER_RUN_LIMIT = 20
+
+// Alerts found already too late are deleted without a push, at most this many a run, so a backlog (after an
+// outage, say) drains steadily and can never crowd out alerts that are still on time.
+export const EXPIRED_PER_RUN = 20
+
+// The cron expression for the once-a-day clean-up. Must equal the second entry in `triggers.crons` in wrangler.jsonc.
+export const DAILY_CRON = '17 3 * * *'
+
+// Subscriptions whose app hasn't been seen for this long are deleted by the daily clean-up, at most this many a day.
+export const STALE_SUBSCRIPTION_MS = 30 * DAY_MS
+export const STALE_SUBSCRIPTIONS_PER_RUN = 200

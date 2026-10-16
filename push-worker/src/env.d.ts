@@ -16,6 +16,8 @@ declare namespace Cloudflare {
     VAPID_PUBLIC_KEY: string
     VAPID_SUBJECT: string
     VAPID_PRIVATE_KEY?: string
+    // How many pushes the scheduler sends per run (a plain variable in wrangler.jsonc; see constants.ts).
+    MAX_PUSHES_PER_RUN?: string
     // Tests only: the migrations to apply to the test database (see vitest.config.ts).
     TEST_MIGRATIONS: import('@cloudflare/vitest-plugin').D1Migration[]
   }

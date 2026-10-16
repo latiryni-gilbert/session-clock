@@ -1,6 +1,6 @@
 # session-clock-push
 
-A small [Cloudflare Worker](https://developers.cloudflare.com/workers/) for Session Clock's push notifications. Today it **stores** push subscriptions and their scheduled alerts in a [D1](https://developers.cloudflare.com/d1/) database, and it can **send Web Push notifications** (one test notification, for now). It has no scheduler yet, so it does not send scheduled alerts.
+A small [Cloudflare Worker](https://developers.cloudflare.com/workers/) for Session Clock's push notifications. Today it **stores** push subscriptions and their scheduled alerts in a [D1](https://developers.cloudflare.com/d1/) database, and it can **send Web Push notifications**: a test notification on request, and, from a cron trigger that runs every minute, the alerts that have come due (see [Scheduler](#scheduler)). The web app does not upload schedules yet, so for now there is nothing for the scheduler to send.
 
 It is separate from the web app: its own `package.json`, TypeScript config and tests, and nothing in the app imports it.
 
@@ -156,11 +156,87 @@ await fetch(W + '/test-push', { method: 'POST', headers: { 'content-type': 'appl
 
 ### Cost of sending
 
-Measured in Node with the same code (Cloudflare's runtime was not measured): about **1 ms of CPU per message** for the encryption (a new key pair and key agreement each time, plus the AES step), about 0.1 ms to sign a VAPID token when one is needed and almost nothing when it's reused. The free plan allows about 10 ms of CPU per invocation, and waiting for the push service doesn't count as CPU. The scheduler should therefore send only a few notifications per invocation, and it also has to stay within the free plan's limit of about 50 subrequests per invocation, which D1 queries and outgoing requests both count towards.
+Each push costs about 1 ms of CPU for the encryption (a new key pair and key agreement every time, plus the AES step), about 0.1 ms to sign a VAPID token when one is needed and almost nothing when it's reused. Waiting for the push service doesn't count as CPU. A scheduler run also pays a fixed cost to set up the keys, so how many pushes a run sends is worked out under [Batch size](#batch-size-why-3).
 
 ### Logging
 
+The scheduler writes one line per run, with counts only (see [Scheduler](#scheduler)).
+
 The Worker logs nothing about requests. An unexpected failure returns a generic `500` and logs only the error's type, never push endpoints, keys or secrets.
+
+## Scheduler
+
+Two cron triggers in `wrangler.jsonc` start it: **every minute** (send what is due) and **03:17 UTC daily** (clean up). The entry point is the Worker's `scheduled` handler in `src/index.ts`; the work is in `src/scheduler.ts`. They deploy with the Worker.
+
+### Every minute
+
+1. **One query** fetches, oldest first, the unsent alerts whose `fire_at` is now or earlier, with their subscription's endpoint and keys: up to the batch size that are still on time, plus up to 20 that are already too late. A run with nothing due **costs exactly that one read query and writes nothing**.
+2. Alerts **more than 10 minutes late are deleted without a push** (one query for all of them). A late session alert is misleading, so it is dropped rather than sent. Because they come out of the same query and have their own allowance of 20 a run, a backlog of late alerts (after an outage, say) can never crowd out the ones still on time.
+3. Each on-time alert is pushed as `{ "title", "body", "tag" }`, all in parallel, and what the push service says decides what happens:
+
+| Push service says | What happens | Counted as |
+|---|---|---|
+| any `2xx` | the alert is **deleted at once** (cheaper than marking it sent and deleting later) | `sent` |
+| `404` or `410` | the subscription is deleted **with all its alerts**, as `/test-push` does | `gone` |
+| anything else: another error status, a redirect, no answer, a host the Worker won't send to, unusable keys, push keys not configured | the alert **stays** and is tried again next minute | `failed` |
+| (the alert was more than 10 minutes late) | deleted without a push | `expired` |
+
+   Each alert is deleted straight after its own push, not all together at the end. The rows written are the same, but a run that is cut off (CPU limit) keeps what it got done instead of sending the same alerts again every minute.
+4. If more are due than the batch allows, the rest **carry over** to the next run, oldest first. A failing alert is retried every minute until it is 10 minutes late, then deleted unsent.
+
+**Never twice.** Every alert has a tag, `alert-<id>` (ids are never reused), sent in the payload as `tag` and as the push's `Topic` header. The push service replaces a still-queued message with the same topic, so a retry of a push that did get through can't leave two waiting, and the tag lets the service worker show each alert once on the device. The web app's service worker doesn't use `tag` yet; it will need to pass it to `showNotification`. The push also tells the push service to drop the message when it would be more than 10 minutes late (`TTL` is what's left of that time) and marks it urgent.
+
+Delivery is **at least once**, not exactly once: if a run is cut off between a push and its delete, the alert goes out again the next minute. That is what the tag and topic are for.
+
+### The log line
+
+One line per run, **counts only**, never an endpoint, key, secret or notification text:
+
+```
+scheduler run: due=3 sent=2 failed=1 expired=0 gone=0
+```
+
+`due` is every alert the run picked up, and it always equals `sent + failed + expired + gone`. (`gone` counts due alerts dropped because their subscription is gone, not subscriptions.) A run that fails unexpectedly logs `scheduler failed: <kind of error>` and is recorded by Cloudflare as failed. See the lines in the dashboard (Workers Logs is switched on for this Worker; invocation logs are off, so requests and client addresses aren't recorded) or live with `npx wrangler tail`.
+
+### The daily clean-up
+
+At 03:17 UTC it deletes **subscriptions not seen for 30 days** with their alerts (at most 200 a day, so a backlog can't spend a day's writes at once; any upload refreshes `last_seen_at` at least daily), and runs the existing [clean-up of old sent alerts](#cleanup-of-sent-alerts). One line: `daily clean-up: old_sent_alerts_deleted=0 stale_subscriptions_deleted=0`.
+
+### Batch size: why 3
+
+A run sends at most **3 pushes** (`MAX_PUSHES_PER_RUN` in `wrangler.jsonc`; any value from 1 to 20 is accepted, anything else means 3). The free plan allows about 10 ms of CPU and 50 subrequests per run, counting D1 queries.
+
+- **Subrequests are not the limit.** A run makes at most 1 read, 1 delete for late alerts, and for each push 1 request plus 1 delete: `2 + 2 × N`. That is 8 for N = 3, and it would still fit at N = 20 (42), which is why 20 is the ceiling.
+- **CPU is.** Measured with the real scheduler code in Node, with a fake database and an instant fake push service (so it excludes the real D1 and network handling, which adds something), CPU per run was:
+
+| | Pushes in the run | median | 90th percentile |
+|---|---|---|---|
+| New isolate (the pessimistic case for a once-a-minute cron) | 1 | 3.9 ms | 6.1 ms |
+| | 2 | 4.6 ms | 6.5 ms |
+| | **3** | **5.1 ms** | **7.5 ms** |
+| | 4 | 6.0 ms | 8.6 ms |
+| | 5 | 6.9 ms | 9.9 ms |
+| Warm isolate | 1 / 3 / 5 | 1.4 / 2.6 / 3.5 ms | 1.8 / 3.4 / 5.0 ms |
+
+  A cold run costs about **3.2 ms before any push** (setting up the keys, first use of the code) plus about **0.75 ms per push**. At 5 pushes the 90th percentile already touches the limit before the unmeasured real I/O is added, and 4 leaves about 1.4 ms. At 3 there is about 2.5 ms of room at the 90th percentile. Going from 2 to 3 costs only about 0.7 ms and adds half again as much throughput, so 3 is where the curve bends.
+- **This was measured in Node, not on Cloudflare.** Treat the margin as thinner than it looks. After deploying, watch the Worker's CPU time and any `Exceeded CPU Limit` errors in the dashboard; if they appear, set `MAX_PUSHES_PER_RUN` to 2 (it is a plain variable, no code change). A cut-off run is survivable: pushes already done were already deleted.
+
+### Limits to know about
+
+- **Throughput is the ceiling on the free plan, well before the write budget.** 3 a minute is at most **180 an hour**, and since an alert more than 10 minutes late is dropped, only about **30 alerts that fall due in the same minute** are delivered in time. Alerts due in different minutes don't compete. That is plenty for a handful of testers and not for hundreds of users who all want the London-open alert at once. On the paid plan (30 s of CPU, 1,000 subrequests) raise `MAX_PUSHES_PER_RUN` (and its cap in `src/constants.ts` accordingly) and the ceiling goes up by the same factor.
+- **A subscription whose pushes keep failing blocks the front of the queue.** Failed alerts stay at the front (oldest first) and use the batch every minute until they are 10 minutes late, which holds newer alerts back for that time. Only unusual cases cause it (a push service answering `400`/`403`/`5xx` for one subscription, or keys that can never work). A test documents it; a per-subscription limit or a retry counter would fix it.
+- **No scheduling while D1 is out of its daily budget:** every run fails until 00:00 UTC (see [If the limit is hit](#if-the-limit-is-hit)).
+- **Not yet verified on Cloudflare:** the CPU numbers above, and a real push delivered by the scheduler to a real device.
+
+### Trying it locally
+
+```bash
+npx wrangler dev --test-scheduled      # with a local .dev.vars, as above
+curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"        # an every-minute run
+curl "http://localhost:8787/__scheduled?cron=17+3+*+*+*"       # the daily clean-up
+```
+
+The tests (`test/scheduler.test.ts`) cover batching and carry-over, the 10-minute rule, dead subscriptions, retries, the daily clean-up, what a quiet run costs, and the log lines.
 
 ## Database
 
@@ -174,9 +250,9 @@ All timestamps are UTC integer milliseconds since the Unix epoch.
 
 ### Cleanup of sent alerts
 
-`deleteOldSentAlerts(db, now, limit = 1000)` in `src/cleanup.ts` deletes alerts sent more than 24 hours ago and returns how many it deleted. Nothing calls it yet: the scheduler will, about once a day. It deletes at most `limit` rows per call so a single run can only spend a bounded part of the write budget (call again while it returns `limit`).
+`deleteOldSentAlerts(db, now, limit = 1000)` in `src/cleanup.ts` deletes alerts sent more than 24 hours ago and returns how many it deleted. The [daily clean-up](#the-daily-clean-up) calls it. The scheduler deletes the alerts it sends, so the only rows it finds are ones marked sent before the scheduler existed. It deletes at most `limit` rows per call so a single run can only spend a bounded part of the write budget (call again while it returns `limit`).
 
-Sent alerts are deliberately not in any index, because every index entry costs an extra written row. The price is that this query scans the alerts table, which costs rows *read* (5 million a day on the free tier, 50 times the write allowance), so once a day is fine and once a minute is not. If the scheduler deletes an alert as soon as it sends it, instead of marking it `sent_at` and cleaning up later, that is one fewer written row per alert (see the budget below).
+Sent alerts are deliberately not in any index, because every index entry costs an extra written row. The price is that this query scans the alerts table, which costs rows *read* (5 million a day on the free tier, 50 times the write allowance), so once a day is fine and once a minute is not.  That is why the scheduler deletes each alert as soon as it sends it, instead of marking it `sent_at` and cleaning up later: one fewer written row per alert (see the budget below).
 
 To change the schema, add the next numbered file (`0003_....sql`); never edit one that has been deployed.
 
@@ -194,32 +270,35 @@ Measured with D1's `meta.rows_written` in the tests, then extended to the parts 
 | Subscribing again with the same endpoint | 1 |
 | An alert, added (`PUT /schedule`) | 3 (the row, `idx_alerts_due`, `idx_alerts_subscription`), plus 1 per insert statement |
 | An alert, removed (`PUT /schedule`) | up to 3 |
-| An alert, marked sent (scheduler, later) | about 2 |
-| An alert, deleted by cleanup | about 2 |
-| **One alert from creation to cleanup** | **about 7** |
+| An alert, deleted after its push is sent (the scheduler) | up to 3 |
+| An alert found more than 10 minutes late, deleted unsent | up to 3 |
+| **One alert from creation to deletion** | **about 6** (it used to be about 7, when it was marked sent and deleted later) |
+| A subscription the push service says is gone (the scheduler or `/test-push`) | 3, plus up to 3 for each of its alerts |
+| A subscription not seen for 30 days (the daily clean-up) | 3, plus up to 3 for each alert it still has |
+| An old row marked sent before the scheduler existed (the daily clean-up) | about 2 |
+| **A scheduler run with nothing due** | **0** (one read query) |
 | Upload that changes the schedule | the alerts above, plus 1 (the hash and `last_seen_at`) |
 | Upload that doesn't change it | **0** (1 row, at most once a day, to refresh `last_seen_at`) |
 | Upload refused by the daily cap | **0** |
 | `POST /test-push`, delivered or failed | **0** (it only reads) |
-| `POST /test-push` that finds a dead subscription | 3 for the subscription, plus up to 3 for each of its alerts (it is deleted) |
 | The daily cap's counter | **0** extra (it rides in the subscription row that is already updated) |
 
 ### How many users
 
 Assumptions, all adjustable: a user ends up with about **10 alerts a day** (a few windows with a lead time and an open alert each, on trading days), the schedule covers 15 days, the app uploads about 3 times a day (mostly unchanged), and 1 in 3 uploads changes something.
 
-- **Steady state, per active user per day:** each day one day of alerts enters the window and one is sent and cleaned up: 10 alerts × 7 rows = 70, plus about 5 for the changing uploads. Call it **80 rows**.
+- **Steady state, per active user per day:** each day one day of alerts enters the window and one is sent and deleted: 10 alerts × 6 rows = 60, plus about 5 for the changing uploads. Call it **65 rows**.
 - **A new user, once:** subscribing plus the first upload of 15 days of alerts: 3 + 150 × 3 + 2 = **about 455 rows**.
 
-So the day's total is roughly `80 × daily active users + 455 × new users that day`. Against 100,000:
+So the day's total is roughly `65 × daily active users + 455 × new users that day`. Against 100,000:
 
 | Daily active users | New users that day | Rows written | Share of the free tier |
 |---|---|---|---|
-| 300 | 20 | ~33,000 | 33% |
-| 600 | 40 | ~66,000 | 66% |
-| 1,000 | 50 | ~103,000 | over |
+| 300 | 20 | ~29,000 | 29% |
+| 800 | 40 | ~70,000 | 70% |
+| 1,200 | 60 | ~105,000 | over |
 
-**Plan for about 600 daily active users, and expect trouble at around 1,000.** Keeping a third of the budget free is deliberate: retries, bursts of sign-ups, and the scheduler's own writes (which this estimate includes for sent/cleanup, but not for anything else it adds) all draw on the same allowance. Alerts per user is the number that matters most: at 20 alerts a day the same budget supports about half as many users, and at 5 about twice as many.
+**Plan for about 800 daily active users, and expect trouble at around 1,100.** Keeping some of the budget free is deliberate: retries, bursts of sign-ups, dead subscriptions and late alerts being deleted, and the daily clean-up all draw on the same allowance. **But the scheduler's throughput on the free plan runs out long before this** (about 30 alerts in the same minute; see [Limits to know about](#limits-to-know-about)), so the write budget is not what limits you first. Alerts per user is the number that matters most: at 20 alerts a day the same budget supports about half as many users, and at 5 about twice as many.
 
 **Before these changes** every upload deleted and re-inserted the whole schedule, about 150 alerts × 6 = 900 rows, and the app uploads on every launch. At 3 uploads a day that is about 2,700 rows per user per day, so the free tier covered roughly **35 users**. The hash check and the diff are what take it from dozens to hundreds.
 
@@ -235,21 +314,21 @@ The [daily cap](#daily-cap-on-alert-changes) puts a ceiling on what one subscrip
 | One upload removing 400 alerts | up to 1,201 |
 | 400 uploads of one alert each, the most expensive way (needs 200 minutes at the 2-a-minute limit) | about **2,000** (5 each: 3 for the alert, 1 for the insert statement, 1 for the subscription row) |
 
-So **one bad subscription costs at most about 2,000 rows a day, 2% of the free tier**, against about 80 for a normal one (25 times). Before the cap, nothing but the 2-a-minute limit stopped it, and each upload could rewrite 500 alerts: millions of rows a day. Refused uploads cost no writes, only reads.
+So **one bad subscription costs at most about 2,000 rows a day, 2% of the free tier**, against about 65 for a normal one (30 times). Before the cap, nothing but the 2-a-minute limit stopped it, and each upload could rewrite 500 alerts: millions of rows a day. Refused uploads cost no writes, only reads.
 
 **The whole service:**
 
 | Scenario | Rows written a day | Free tier used |
 |---|---|---|
-| Normal: 600 daily active users, 40 new | ~66,000 | 66% |
+| Normal: 600 daily active users, 40 new | ~57,000 | 57% |
 | One misbehaving subscription on top | up to +2,000 | +2% |
 | A bug in the app that sends every client into the loop | 600 x about 1,200+ = over 700,000 | **7 times over** |
-| The same bug in 30 of those 600 users (5%) | ~66,000 + 30 x 1,120 = ~100,000 | **at the limit** |
+| The same bug in 30 of those 600 users (5%) | ~57,000 + 30 x 1,135 = ~91,000 | **close to the limit** |
 | A deliberate attacker with 85 subscriptions | 85 x about 1,200 = ~100,000 | **at the limit** |
 
 What this means:
 
-- The cap makes **one bad client a rounding error**. It does not make **many bad clients** safe. A bug in the app released to everyone, or one that hits more than about 5% of users at once, can still use up the free tier in a day. Releasing client changes to the schedule upload carefully (and watching D1's row count after) is the real defence for that.
+- The cap makes **one bad client a rounding error**. It does not make **many bad clients** safe. A bug in the app released to everyone, or one that hits more than about 6% of users at once, can still use up the free tier in a day. Releasing client changes to the schedule upload carefully (and watching D1's row count after) is the real defence for that.
 - It does **not stop a deliberate attacker**. Subscribing needs no account: one address can create about 85 subscriptions in half an hour (3 a minute), and each can make one 400-alert upload, which is the whole day's budget. The cap and rate limits only make this take 30 minutes and some effort instead of a few requests. To really close it, the options are: put a challenge such as Cloudflare Turnstile in front of `POST /subscribe`; cap the number of new subscriptions a day for the whole service; or move to the paid Workers plan. None of those is done here.
 - When any of this happens the result is the same as below: the service returns `503` until 00:00 UTC.
 
@@ -259,7 +338,7 @@ From 1 September 2026 [D1 on the Free plan fails every query once either daily l
 
 - `POST /subscribe`, `PUT /schedule` and `POST /unsubscribe` answer **`503`** with a `Retry-After` giving the seconds until 00:00 UTC, and the Worker logs `D1 daily free-tier limit reached` (nothing else) so it shows up in the logs. The app should keep working without push: its in-page alerts need no server, so it should retry after the `Retry-After` time and not treat this as a failure.
 - `GET /health` keeps working, because it uses no database. It does not tell you the database is out of budget.
-- Nothing is lost on the server's side except time: when the scheduler exists it won't be able to read due alerts either, so alerts that fall due during the outage are late. Once the counters reset, the scheduler should skip alerts that are long overdue instead of sending them all at once.
+- **The scheduler stops too:** it can't read due alerts either, so every minute's run fails (logged as `scheduler failed: Error`) until 00:00 UTC. Alerts that fall due during the outage are not lost at once, but once the counters reset only those no more than 10 minutes late are sent; older ones are deleted unsent, which is the rule working as intended, not a flood of stale notifications.
 - The fix is to wait, or to move to the paid Workers plan, which has far larger limits.
 
 ## Develop
@@ -276,6 +355,8 @@ npm test           # tests run inside the Workers runtime (Cloudflare's Vitest i
 > Use npm 11 when you **add or change** dependencies (`npx npm@11 install ...`). npm 10, the version that ships with Node 22, fails to resolve this project's Vitest peer dependencies. Installing from the committed `package-lock.json` (`npm ci`) works with either.
 
 ## Deploy
+
+The cron triggers deploy with the Worker, so the every-minute run starts as soon as a deploy goes live. With no alerts yet that is one cheap read query a minute (about 1,440 a day, well inside the 5 million reads).
 
 CI (`.github/workflows/ci.yml`) installs, type-checks and tests this folder on every pull request.
 

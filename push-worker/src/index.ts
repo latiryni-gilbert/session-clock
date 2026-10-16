@@ -1,8 +1,9 @@
-import { SERVICE_NAME } from './constants'
+import { DAILY_CRON, SERVICE_NAME } from './constants'
 import { corsHeaders, isAllowedOrigin } from './cors'
 import { schedule, subscribe, testPush, unsubscribe, vapidPublicKey } from './handlers'
 import { errorResponse, HttpError, json } from './http'
 import { enforceRateLimit } from './ratelimit'
+import { formatMaintenance, formatRun, runMaintenance, runScheduler } from './scheduler'
 import { secondsUntilUtcMidnight } from './time'
 import { loadVapidKeys } from './vapid'
 
@@ -89,5 +90,17 @@ export default {
     const route = Object.hasOwn(API, pathname) ? API[pathname] : undefined
     if (route) return api(request, env, route)
     return errorResponse(404, 'Not found')
+  },
+
+  /** The cron triggers: every minute, send due alerts; once a day (DAILY_CRON), clean up. */
+  async scheduled(controller, env): Promise<void> {
+    try {
+      if (controller.cron === DAILY_CRON) console.log(formatMaintenance(await runMaintenance(env, Date.now())))
+      else console.log(formatRun(await runScheduler(env, Date.now())))
+    } catch (error) {
+      // Only the kind of error is logged (never data), and it is rethrown so Cloudflare records the run as failed.
+      console.error('scheduler failed:', error instanceof Error ? error.name : 'unknown')
+      throw error
+    }
   },
 } satisfies ExportedHandler<Cloudflare.Env>
