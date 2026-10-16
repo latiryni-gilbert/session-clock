@@ -91,6 +91,12 @@ describe('buildSchedule', () => {
       const [live] = getDueNewsAlerts(events, 30, at, new Map(), new Date(at.getTime() - 1000))
       expect(s.alerts[0].title).toBe(bannerMessage(live, at))
     })
+    it('leaves out a news alert due in under 2 minutes', () => {
+      const soon: NewsEvent[] = [{ ...events[0], id: 'soon', date: '2026-11-23', time: '07:16' }] // 12:16Z; a 15-minute alert is 12:01Z
+      expect(build({}, { newsLead: 15, events: soon }).alerts).toEqual([])
+      const ok: NewsEvent[] = [{ ...events[0], id: 'ok', date: '2026-11-23', time: '07:17' }] // alert at 12:02Z: exactly 2 minutes away
+      expect(build({}, { newsLead: 15, events: ok }).alerts).toHaveLength(1)
+    })
     it('adds none when news alerts are off', () => {
       expect(build({}, { newsLead: null, events }).alerts).toEqual([])
     })
@@ -137,6 +143,16 @@ describe('buildSchedule', () => {
       const s = buildSchedule({ groups: [many(28)], leads: leadsFor(28), newsLead: null, events: [], now: NOW }) // 28 * 14 = 392
       expect(s.alerts).toHaveLength(392)
       expect(s.shortened).toBe(false)
+    })
+    it('keeps exactly 400, and at 401 cuts back to 400 and says so', () => {
+      const evs = (n: number): NewsEvent[] =>
+        Array.from({ length: n }, (_, i) => ({ id: `e${i}`, name: 'CPI', shortName: 'CPI', date: '2026-11-24', time: `${String(7 + Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}`, timeZone: 'UTC', currency: 'USD', source: 'BLS' }) as NewsEvent)
+      const exact = buildSchedule({ groups: [], leads: {}, newsLead: 5, events: evs(400), now: NOW })
+      expect(exact.alerts).toHaveLength(400)
+      expect(exact.shortened).toBe(false)
+      const over = buildSchedule({ groups: [], leads: {}, newsLead: 5, events: evs(401), now: NOW })
+      expect(over.alerts).toHaveLength(400)
+      expect(over.shortened).toBe(true)
     })
     it('cuts the horizon back when there are more, keeping a contiguous run from now', () => {
       const s = buildSchedule({ groups: [many(40)], leads: leadsFor(40), newsLead: null, events: [], now: NOW })

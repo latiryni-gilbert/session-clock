@@ -85,6 +85,15 @@ describe('useScheduleSync', () => {
       expect(puts(fake)).toHaveLength(2)
       expect((puts(fake)[1].body as { alerts: unknown[] }).alerts.length).toBeGreaterThan((puts(fake)[0].body as { alerts: unknown[] }).alerts.length)
     })
+    it('uploads a change even when it returns to what the page started with', async () => {
+      const { fake, change } = mount(on)
+      await settle()
+      change({ lead: { 'nyse-regular': 5 } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(CHANGE_DEBOUNCE_MS) })
+      change({ lead: { 'nyse-regular': 15 } }) // back to the initial settings
+      await act(async () => { await vi.advanceTimersByTimeAsync(CHANGE_DEBOUNCE_MS) })
+      expect(puts(fake)).toHaveLength(3)
+    })
     it('does not upload for a re-render with the same settings (groups is a new array every render)', async () => {
       const { fake, change } = mount(on)
       await settle()
