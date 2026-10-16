@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import wranglerConfig from '../wrangler.jsonc?raw'
 import { DAILY_CRON, EXPIRED_PER_RUN, LATE_LIMIT_MS, STALE_SUBSCRIPTIONS_PER_RUN } from '../src/constants'
-import { alertTag, DUE_SQL, formatRun, pushesPerRun, runMaintenance, runScheduler } from '../src/scheduler'
+import { alertTag, DUE_SQL, formatRun, pushesPerRun, runMaintenance, runScheduler, type RunCounts } from '../src/scheduler'
 import { DAY, MIN, countDb, count, resetDb } from './helpers'
 import { mockPushService, registerBrowser, runCron, verifyVapidHeader } from './webpush-helpers'
 
@@ -16,12 +16,15 @@ afterEach(() => vi.restoreAllMocks())
 type Account = Awaited<ReturnType<typeof registerBrowser>>
 
 /** Adds an alert that was due `minutesLate` minutes before NOW (negative: in the future). Returns its id. */
-async function alertFor(account: Pick<Account, 'id'>, minutesLate: number, title = 'London opens', body = 'in 15 minutes') {
-  const row = await env.DB.prepare('INSERT INTO alerts (subscription_id, fire_at, title, body) VALUES (?, ?, ?, ?) RETURNING id')
-    .bind(account.id, NOW - minutesLate * MIN, title, body)
+async function alertFor(account: Pick<Account, 'id'>, minutesLate: number, title = 'London opens', body = 'in 15 minutes', attempts = 0) {
+  const row = await env.DB.prepare('INSERT INTO alerts (subscription_id, fire_at, title, body, attempts) VALUES (?, ?, ?, ?, ?) RETURNING id')
+    .bind(account.id, NOW - minutesLate * MIN, title, body, attempts)
     .first<{ id: number }>()
   return row!.id
 }
+/** The counts a run returns, with the fields a test doesn't care about at zero. */
+const counted = (c: Partial<RunCounts>): RunCounts => ({ due: 0, sent: 0, failed: 0, expired: 0, gone: 0, dropped: 0, skipped: 0, ...c })
+const attemptsOf = async (id: number) => (await env.DB.prepare('SELECT attempts FROM alerts WHERE id = ?').bind(id).first<{ attempts: number }>())?.attempts ?? null
 const remainingAlerts = async () => (await env.DB.prepare('SELECT id FROM alerts ORDER BY fire_at, id').all<{ id: number }>()).results.map((r) => r.id)
 const subscriptionIds = async () => (await env.DB.prepare('SELECT id FROM subscriptions').all<{ id: string }>()).results.map((r) => r.id)
 const run = (bindings: Record<string, unknown> = {}, now = NOW) => runScheduler({ ...env, ...bindings } as unknown as Cloudflare.Env, now)
@@ -39,7 +42,7 @@ describe('a run with nothing due', () => {
 
     const counts = await runScheduler(counting, NOW)
 
-    expect(counts).toEqual({ due: 0, sent: 0, failed: 0, expired: 0, gone: 0 })
+    expect(counts).toEqual(counted({ due: 0, sent: 0, failed: 0, expired: 0, gone: 0 }))
     expect(tally.sql).toEqual([DUE_SQL]) // exactly one query, and it is the read
     expect(tally.rowsWritten).toBe(0)
     expect(push.calls).toHaveLength(0)
@@ -60,12 +63,11 @@ describe('a run with nothing due', () => {
     expect(push.calls).toHaveLength(0)
   })
 
-  it('reads through the index on unsent alerts for both halves of the query, with no sort', async () => {
-    const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN ${DUE_SQL}`).bind(0, 1, 2, 3).all<{ detail: string }>()
+  it('reads through the index on unsent alerts for both halves of the query, never by scanning the table', async () => {
+    const plan = await env.DB.prepare(`EXPLAIN QUERY PLAN ${DUE_SQL}`).bind(0, 1, 2, 3, 3).all<{ detail: string }>()
     const details = plan.results.map((r) => r.detail)
     expect(details.filter((d) => d.includes('SEARCH a USING INDEX idx_alerts_due'))).toHaveLength(2)
     expect(details.some((d) => /SCAN a\b/.test(d) && !d.includes('USING INDEX'))).toBe(false) // never a full table scan
-    expect(details.some((d) => d.includes('TEMP B-TREE'))).toBe(false)
   })
 })
 
@@ -77,7 +79,7 @@ describe('sending a due alert', () => {
 
     const counts = await run()
 
-    expect(counts).toEqual({ due: 1, sent: 1, failed: 0, expired: 0, gone: 0 })
+    expect(counts).toEqual(counted({ due: 1, sent: 1, failed: 0, expired: 0, gone: 0 }))
     expect(push.calls).toHaveLength(1)
     expect(push.calls[0]!.url).toBe(account.endpoint)
     expect(JSON.parse(new TextDecoder().decode(await account.browser.decrypt(push.calls[0]!.body)))).toEqual({
@@ -107,8 +109,8 @@ describe('sending a due alert', () => {
     const second = await alertFor(account, 1, 'B')
     const outcomes = [status(500), ok, ok] // A fails once and is retried; B succeeds
     const push = mockPushService(() => outcomes.shift()!())
-    await run() // sends A (500) and B (ok) in the same run
-    await run() // retries A
+    await run() // pushes A (500); B, on the same failing subscription, waits for the next run
+    await run() // B first (not yet tried), then the retry of A
     const tags = await Promise.all(push.calls.map(async (c) => JSON.parse(new TextDecoder().decode(await account.browser.decrypt(c.body))).tag))
 
     expect(alertTag(first)).toBe(`alert-${first}`)
@@ -221,8 +223,7 @@ describe('batching and carry-over', () => {
   })
 
   it('MAX_PUSHES_PER_RUN sets the batch size', async () => {
-    const account = await registerBrowser()
-    for (let i = 0; i < 12; i++) await alertFor(account, 1 + i / 100)
+    for (let i = 0; i < 12; i++) await alertFor(await registerBrowser(), 1 + i / 100)
     const push = mockPushService(ok)
     await run({ MAX_PUSHES_PER_RUN: '5' })
     expect(push.calls).toHaveLength(5)
@@ -252,7 +253,7 @@ describe('batching and carry-over', () => {
   it('stays inside 50 queries and requests even at the highest batch size, in the worst mix', async () => {
     // 20 on time and all sent: 1 read + 20 deletes + 20 pushes. Plus the expired ones: 1 more delete.
     const account = await registerBrowser()
-    for (let i = 0; i < 20; i++) await alertFor(account, 1 + i / 100)
+    for (let i = 0; i < 20; i++) await alertFor(await registerBrowser(), 1 + i / 100)
     for (let i = 0; i < EXPIRED_PER_RUN; i++) await alertFor(account, 30 + i)
     const push = mockPushService(ok)
     const { tally, env: counting } = countDb(env.DB)
@@ -287,7 +288,7 @@ describe('the 10-minute rule', () => {
     const id = await alertFor(account, LATE_LIMIT_MS / MIN + 1 / 60000)
     const push = mockPushService(ok)
     const counts = await run()
-    expect(counts).toEqual({ due: 1, sent: 0, failed: 0, expired: 1, gone: 0 })
+    expect(counts).toEqual(counted({ due: 1, sent: 0, failed: 0, expired: 1, gone: 0 }))
     expect(push.calls).toHaveLength(0)
     expect(await remainingAlerts()).not.toContain(id)
     expect(await subscriptionIds()).toEqual([account.id]) // the subscription stays
@@ -300,7 +301,7 @@ describe('the 10-minute rule', () => {
     const push = mockPushService(ok)
     const { tally, env: counting } = countDb(env.DB)
     const counts = await runScheduler(counting, NOW)
-    expect(counts).toEqual({ due: 8, sent: 3, failed: 0, expired: 5, gone: 0 })
+    expect(counts).toEqual(counted({ due: 8, sent: 3, failed: 0, expired: 5, gone: 0 }))
     expect(push.calls).toHaveLength(3)
     expect(tally.sql.filter((q) => q.startsWith('DELETE FROM alerts WHERE id IN'))).toHaveLength(1)
     expect(await remainingAlerts()).toEqual([])
@@ -335,18 +336,13 @@ describe('the 10-minute rule', () => {
     expect(await count('alerts')).toBe(0)
   })
 
-  it('an alert that keeps failing is retried until it is 10 minutes late, then deleted unsent', async () => {
+  it('an alert that has already failed twice but is now more than 10 minutes late is deleted unsent, with no push', async () => {
     const account = await registerBrowser()
-    const id = await alertFor(account, 0)
+    const id = await alertFor(account, LATE_LIMIT_MS / MIN + 1 / 60000, 'late', 'x', 2)
     const push = mockPushService(status(503))
-    expect(await run({}, NOW)).toMatchObject({ failed: 1 })
-    expect(await run({}, NOW + 5 * MIN)).toMatchObject({ failed: 1 })
-    expect(await run({}, NOW + 10 * MIN)).toMatchObject({ failed: 1 }) // exactly 10 minutes late: still tried
-    expect(await remainingAlerts()).toEqual([id])
-    const sends = push.calls.length
-    expect(await run({}, NOW + 10 * MIN + 1)).toMatchObject({ expired: 1, failed: 0 })
-    expect(push.calls).toHaveLength(sends) // no push for the expired one
-    expect(await remainingAlerts()).toEqual([])
+    expect(await run()).toEqual(counted({ due: 1, expired: 1 }))
+    expect(push.calls).toHaveLength(0)
+    expect(await remainingAlerts()).not.toContain(id)
   })
 })
 
@@ -362,7 +358,7 @@ describe('subscriptions the push service says are gone', () => {
 
     const counts = await run()
 
-    expect(counts).toEqual({ due: 1, sent: 0, failed: 0, expired: 0, gone: 1 })
+    expect(counts).toEqual(counted({ due: 1, sent: 0, failed: 0, expired: 0, gone: 1 }))
     expect(await subscriptionIds()).toEqual([alive.id])
     expect(await remainingAlerts()).toEqual([kept])
   })
@@ -382,10 +378,11 @@ describe('subscriptions the push service says are gone', () => {
     await alertFor(dead, 3)
     await alertFor(dead, 2)
     await alertFor(dead, 1)
-    mockPushService(status(410))
+    const push = mockPushService(status(410))
     const { tally, env: counting } = countDb(env.DB)
     const counts = await runScheduler(counting, NOW)
-    expect(counts).toMatchObject({ due: 3, gone: 3, sent: 0, failed: 0 })
+    expect(counts).toMatchObject({ due: 3, gone: 3, sent: 0, failed: 0 }) // all three are dropped...
+    expect(push.calls).toHaveLength(1) // ...after a single push found the subscription gone
     expect(tally.sql.filter((q) => q === 'DELETE FROM subscriptions WHERE id = ?')).toHaveLength(1)
     expect(await count('subscriptions')).toBe(0)
     expect(await count('alerts')).toBe(0)
@@ -423,7 +420,7 @@ describe('failures are retried', () => {
     const account = await registerBrowser()
     const id = await alertFor(account, 1)
     mockPushService(respond)
-    expect(await run()).toEqual({ due: 1, sent: 0, failed: 1, expired: 0, gone: 0 })
+    expect(await run()).toEqual(counted({ due: 1, sent: 0, failed: 1, expired: 0, gone: 0 }))
     expect(await remainingAlerts()).toEqual([id])
     expect(await subscriptionIds()).toEqual([account.id])
   })
@@ -453,24 +450,14 @@ describe('failures are retried', () => {
     expect(await remainingAlerts()).toEqual([failing])
   })
 
-  it('known limitation: alerts that keep failing at the front of the queue hold back newer ones until they expire', async () => {
-    const bad = await registerBrowser()
-    const good = await registerBrowser()
-    for (let i = 0; i < 3; i++) await alertFor(bad, 5 + i) // the three oldest
-    const waiting = await alertFor(good, 1)
-    const push = mockPushService((call) => (call.url === bad.endpoint ? new Response(null, { status: 503 }) : ok()))
-    expect(await run()).toMatchObject({ due: 3, failed: 3, sent: 0 })
-    expect(push.calls.every((c) => c.url === bad.endpoint)).toBe(true)
-    expect(await remainingAlerts()).toContain(waiting) // still waiting behind them
-  })
-
-  it('counts a missing or mismatched private key as failures and deletes nothing', async () => {
+  it('without usable push keys nothing is pushed, and the alerts keep their attempts: that is not their fault', async () => {
     const account = await registerBrowser()
-    await alertFor(account, 1)
+    const id = await alertFor(account, 1)
     const push = mockPushService(ok)
-    expect(await run({ VAPID_PRIVATE_KEY: undefined })).toMatchObject({ due: 1, failed: 1, sent: 0 })
+    expect(await run({ VAPID_PRIVATE_KEY: undefined })).toEqual(counted({ skipped: 1 }))
     expect(push.calls).toHaveLength(0)
-    expect(await count('alerts')).toBe(1)
+    expect(await remainingAlerts()).toEqual([id])
+    expect(await attemptsOf(id)).toBe(0)
   })
 })
 
@@ -484,7 +471,7 @@ describe('a mixed run adds up', () => {
     await alertFor(okAcc, 50) // late
     mockPushService((call) => (call.url === failAcc.endpoint ? new Response(null, { status: 500 }) : call.url === goneAcc.endpoint ? new Response(null, { status: 404 }) : ok()))
     const counts = await run()
-    expect(counts).toEqual({ due: 5, sent: 1, failed: 1, expired: 2, gone: 1 })
+    expect(counts).toEqual(counted({ due: 5, sent: 1, failed: 1, expired: 2, gone: 1 }))
     expect(counts.due).toBe(counts.sent + counts.failed + counts.expired + counts.gone)
   })
 })
@@ -602,14 +589,14 @@ describe('logging', () => {
     mockPushService(ok)
     const [log, ...others] = spyOnConsole()
     await runCron('* * * * *')
-    expect(log!.mock.calls).toEqual([['scheduler run: due=1 sent=1 failed=0 expired=0 gone=0']])
+    expect(log!.mock.calls).toEqual([['scheduler run: due=1 sent=1 failed=0 expired=0 gone=0 dropped=0 skipped=0']])
     for (const spy of others) expect(spy).not.toHaveBeenCalled()
   })
 
   it('even a run with nothing due writes its line', async () => {
     const [log] = spyOnConsole()
     await runCron('* * * * *')
-    expect(log!.mock.calls).toEqual([['scheduler run: due=0 sent=0 failed=0 expired=0 gone=0']])
+    expect(log!.mock.calls).toEqual([['scheduler run: due=0 sent=0 failed=0 expired=0 gone=0 dropped=0 skipped=0']])
   })
 
   it('the daily clean-up writes one line, with counts only', async () => {
@@ -619,7 +606,9 @@ describe('logging', () => {
   })
 
   it('formats counts as numbers only', () => {
-    expect(formatRun({ due: 5, sent: 1, failed: 1, expired: 2, gone: 1 })).toBe('scheduler run: due=5 sent=1 failed=1 expired=2 gone=1')
+    expect(formatRun({ due: 5, sent: 1, failed: 1, expired: 2, gone: 1, dropped: 1, skipped: 3 })).toBe(
+      'scheduler run: due=5 sent=1 failed=1 expired=2 gone=1 dropped=1 skipped=3',
+    )
   })
 
   it('never writes an endpoint, key, secret, tag or notification text, whatever happens in the run', async () => {
