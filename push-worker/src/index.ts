@@ -1,14 +1,18 @@
 import { SERVICE_NAME } from './constants'
 import { corsHeaders, isAllowedOrigin } from './cors'
-import { schedule, subscribe, unsubscribe } from './handlers'
+import { schedule, subscribe, testPush, unsubscribe, vapidPublicKey } from './handlers'
 import { errorResponse, HttpError, json } from './http'
 import { enforceRateLimit } from './ratelimit'
 import { secondsUntilUtcMidnight } from './time'
+import { loadVapidKeys } from './vapid'
 
 // Note: a Worker's entry module may only export handlers, so everything else lives in other files.
 
-/** GET /health: is the Worker up, and which commit is deployed. */
-function health(request: Request, env: Cloudflare.Env): Response {
+/**
+ * GET /health: is the Worker up, which commit is deployed, and are the push keys usable.
+ * `pushConfigured` is only ever true or false; the keys themselves are never included.
+ */
+async function health(request: Request, env: Cloudflare.Env): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return errorResponse(405, 'Method not allowed', { allow: 'GET, HEAD' })
   }
@@ -16,7 +20,7 @@ function health(request: Request, env: Cloudflare.Env): Response {
   if (request.method === 'HEAD') {
     return new Response(null, { status: 200, headers: { 'cache-control': 'no-store', 'content-type': 'application/json' } })
   }
-  return json({ ok: true, service: SERVICE_NAME, version: env.GIT_COMMIT_SHA || 'unknown' })
+  return json({ ok: true, service: SERVICE_NAME, version: env.GIT_COMMIT_SHA || 'unknown', pushConfigured: (await loadVapidKeys(env)) !== null })
 }
 
 type Handler = (request: Request, env: Cloudflare.Env) => Promise<Response>
@@ -24,13 +28,15 @@ interface Route {
   method: string
   handler: Handler
   /** Per-client-IP rate limit applied before anything else is done with the request. */
-  limiter?: 'SUBSCRIBE_LIMITER' | 'SCHEDULE_LIMITER'
+  limiter?: 'SUBSCRIBE_LIMITER' | 'SCHEDULE_LIMITER' | 'TEST_PUSH_IP_LIMITER'
 }
 
 const API: Record<string, Route> = {
   '/subscribe': { method: 'POST', handler: subscribe, limiter: 'SUBSCRIBE_LIMITER' },
   '/schedule': { method: 'PUT', handler: schedule, limiter: 'SCHEDULE_LIMITER' },
   '/unsubscribe': { method: 'POST', handler: unsubscribe },
+  '/test-push': { method: 'POST', handler: testPush, limiter: 'TEST_PUSH_IP_LIMITER' },
+  '/vapid-public-key': { method: 'GET', handler: vapidPublicKey },
 }
 
 // D1's free tier fails every query (reads too) once a daily row limit is used up, until 00:00 UTC.
@@ -79,7 +85,7 @@ async function api(request: Request, env: Cloudflare.Env, route: Route): Promise
 export default {
   async fetch(request, env): Promise<Response> {
     const { pathname } = new URL(request.url)
-    if (pathname === '/health') return health(request, env)
+    if (pathname === '/health') return await health(request, env)
     const route = Object.hasOwn(API, pathname) ? API[pathname] : undefined
     if (route) return api(request, env, route)
     return errorResponse(404, 'Not found')

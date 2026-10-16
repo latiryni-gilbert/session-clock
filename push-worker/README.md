@@ -1,6 +1,6 @@
 # session-clock-push
 
-A small [Cloudflare Worker](https://developers.cloudflare.com/workers/) for Session Clock's push notifications. Today it **stores** push subscriptions and their scheduled alerts in a [D1](https://developers.cloudflare.com/d1/) database. It does not send anything yet and has no scheduler.
+A small [Cloudflare Worker](https://developers.cloudflare.com/workers/) for Session Clock's push notifications. Today it **stores** push subscriptions and their scheduled alerts in a [D1](https://developers.cloudflare.com/d1/) database, and it can **send Web Push notifications** (one test notification, for now). It has no scheduler yet, so it does not send scheduled alerts.
 
 It is separate from the web app: its own `package.json`, TypeScript config and tests, and nothing in the app imports it.
 
@@ -10,13 +10,15 @@ All endpoints take and return JSON. Errors look like `{ "ok": false, "error": "<
 
 | Request | Success | Errors |
 |---|---|---|
-| `GET /health` | `200` `{ "ok": true, "service": "session-clock-push", "version": "<git commit sha>" }` (`HEAD` works too) | `405` for other methods |
+| `GET /health` | `200` `{ "ok": true, "service": "session-clock-push", "version": "<git commit sha>", "pushConfigured": true }` (`HEAD` works too) | `405` for other methods |
+| `GET /vapid-public-key` | `200` `{ "publicKey": "..." }` | `503` push is not configured |
 | `POST /subscribe` | `200` `{ "id": "...", "secret": "..." }` | `400` invalid subscription, `429` too many requests |
 | `PUT /schedule` | `200` `{ "ok": true, "scheduled": <count>, "added": <n>, "removed": <n> }`, or `{ "ok": true, "scheduled": <count>, "unchanged": true }` | `401` wrong id/secret, `400` invalid alerts or an upload too big for one day, `409` overlapping upload, `429` too many requests or the daily change cap |
 | `POST /unsubscribe` | `200` `{ "ok": true }` | `401` wrong id/secret |
+| `POST /test-push` | `200` `{ "ok": true }` | `401` wrong id/secret, `410` the subscription is gone (and was deleted), `422` unusable keys, `429` too many requests, `502` the push service refused or couldn't be reached, `503` push is not configured |
 | anything else | | `404` `Not found` |
 
-Any endpoint that uses the database answers `503` with a `Retry-After` header when D1's daily free-tier limit is used up (see [Write budget](#write-budget)). Wrong method on one of the three endpoints is `405` (with an `Allow` header). Any request body must be a JSON object sent as `Content-Type: application/json`: otherwise `415`; malformed JSON or invalid UTF-8 is `400`; over 64 KB is `413`.
+Any endpoint that uses the database answers `503` with a `Retry-After` header when D1's daily free-tier limit is used up (see [Write budget](#write-budget)). Wrong method on one of the endpoints above is `405` (with an `Allow` header). Any request body must be a JSON object sent as `Content-Type: application/json`: otherwise `415`; malformed JSON or invalid UTF-8 is `400`; over 64 KB is `413`.
 
 ### `POST /subscribe`
 
@@ -81,6 +83,9 @@ Using [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-
 | `PUT /schedule`: **10 a minute** | client IP | The app uploads when it opens and when settings change, and unchanged uploads write nothing. This only bounds reads and CPU (including guessing-style requests with wrong credentials) and leaves room for several devices behind one address. |
 | `PUT /schedule` that **changes** something: **2 a minute** | subscription id | This is the one that guards the write budget. A real user changes their alerts a few times a day at most (the app should wait a moment after the last edit before uploading), so a buggy client stuck in a loop of changing uploads is held to about 2,900 a day instead of thousands a minute. The [daily cap](#daily-cap-on-alert-changes) then limits how much those uploads can actually change. Re-sending a schedule that is already stored is not limited by this one. |
 
+| `POST /test-push`: **1 a minute** | subscription id | It is a test button, not a feature the app should call repeatedly. Counted only after the secret checks out. |
+| `POST /test-push`: **10 a minute** | client IP | Bounds the database reads that checking credentials costs. |
+
 `POST /unsubscribe` is not limited: it only frees rows. Requests with no client address (only possible outside Cloudflare, such as local development) are not limited, and if a limiter is unavailable the request goes ahead rather than failing.
 
 **Not available on the free plan?** I couldn't open Cloudflare's docs from the build environment, so whether the Free plan includes this binding is unconfirmed. If it doesn't, Cloudflare should reject the deploy and the previous Worker keeps running (the migration that runs first is additive, so the old code still works against it). The alternative would be a Cloudflare WAF rate-limiting rule, which needs a domain on Cloudflare rather than `workers.dev`. Counting in D1 instead would spend the very writes we are trying to save.
@@ -96,6 +101,62 @@ Each subscription may have at most **400 alerts added + removed per UTC day**. A
 - **It adds no writes.** The day and the count are two columns on the subscription row, set in the same `UPDATE` that already records the new schedule hash.
 - **One upload can't change more than 400 alerts on its own.** The schedule itself can hold up to 500, but building a 401 to 500 alert schedule from nothing needs 401 or more changes, so it would never fit in a day. That case is answered with `400` (not `429`, because waiting until tomorrow would not help). Normal clients are nowhere near it. If you ever need schedules that long, raise the cap or lower the 500 limit.
 - A refused upload still uses one of the 2-a-minute changing-upload allowance above, because that check comes first.
+
+### Web Push
+
+`GET /vapid-public-key` gives the app the key it passes to `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })`. It answers `503` instead of handing out a key that can't be used (see [Configuration](#web-push-configuration)). The answer may be cached for an hour.
+
+`POST /test-push` takes `{ "id": "...", "secret": "..." }` and sends that subscription one notification, to prove background alerts work. The push message is JSON, `{ "title": "Session Clock", "body": "Background alerts are working." }`. (The app's service worker has no `push` handler yet, so for now nothing is shown even when delivery works; that comes with the app's side of this.) It is limited to **1 a minute per subscription** and 10 a minute per client IP, with the usual `429` and `Retry-After: 60`.
+
+What the push service answers decides what you get back:
+
+| Push service says | Result | Subscription |
+|---|---|---|
+| any `2xx` | `200` `{ "ok": true }` | kept |
+| `404` or `410` (the browser has dropped the subscription) | `410`, "subscribe again" | **deleted, with its alerts** |
+| any other status (`400`, `401`, `403`, `413`, `429`, `5xx`, a redirect) | `502` `The push service refused the message (status N)` | kept |
+| no answer within 8 seconds, or a network error | `502` `Could not reach the push service` | kept |
+
+The Worker only sends to the real push services behind the browsers' Push APIs (`fcm.googleapis.com`, `*.push.services.mozilla.com`, `*.push.apple.com`, `*.notify.windows.com`), over plain `https`, and never follows a redirect. `POST /subscribe` accepts any public `https` URL, and without this check anyone could use the Worker to send requests to arbitrary servers. A subscription on any other host gets a `502` and nothing is sent. If a browser ever uses another push service, add its host to `PUSH_HOSTS` or `PUSH_HOST_SUFFIXES` in `src/webpush.ts`.
+
+The message is encrypted as RFC 8291 (`aes128gcm`) and signed as RFC 8292 (VAPID), using only Web Crypto, with no library. A payload can be at most 3,993 bytes. Each VAPID token lasts 12 hours and is reused for a push service until it has under an hour left.
+
+**The Worker never logs push endpoints, keys, secrets or notification contents**, and none of them appear in error responses.
+
+### Web Push configuration
+
+| Setting | Kind | Where |
+|---|---|---|
+| `VAPID_PUBLIC_KEY` | plain variable | `wrangler.jsonc` |
+| `VAPID_SUBJECT` | plain variable (`https://sessionclock.vercel.app`; must be an `https:` URL or `mailto:` address) | `wrangler.jsonc` |
+| `VAPID_PRIVATE_KEY` | **secret**, never in a file | Cloudflare: `npx wrangler secret put VAPID_PRIVATE_KEY` |
+
+Deploys keep the secret, so it only has to be set once. It is either the raw 32-byte private key as base64url (what `web-push generate-vapid-keys` prints) or a PKCS#8 key. It must be the other half of `VAPID_PUBLIC_KEY`: the Worker checks this by signing something with the private key and verifying it with the public one, and treats a mismatch as not configured. A deploy succeeds even when the secret is missing, so **`/health` reports `pushConfigured`: `true` only when all three settings are present, valid, and the keys match.** It is only ever `true` or `false`. The deploy's [smoke test](#deploy) fails the run if it isn't `true`.
+
+For `wrangler dev`, put a throwaway pair in `.dev.vars` (git ignores it; the local public key must go there too, because the one in `wrangler.jsonc` belongs to the real private key):
+
+```bash
+node -e "const c=require('node:crypto');const k=c.generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey.export({format:'jwk'});
+console.log('VAPID_PUBLIC_KEY='+Buffer.concat([Buffer.from([4]),Buffer.from(k.x,'base64url'),Buffer.from(k.y,'base64url')]).toString('base64url')+'\nVAPID_PRIVATE_KEY='+k.d)" > .dev.vars
+```
+
+The tests make their own throwaway pair on every run, so they need no key.
+
+**Trying it with a real browser** (the app has no push UI yet): on the live site's tab, in the browser console, with `W` set to this Worker's URL:
+
+```js
+const reg = await navigator.serviceWorker.ready
+const { publicKey } = await (await fetch(W + '/vapid-public-key')).json()
+const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey })
+const account = await (await fetch(W + '/subscribe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sub) })).json()
+await fetch(W + '/test-push', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(account) })
+```
+
+`200` means the push service accepted the message. Nothing will be displayed until the service worker handles `push` events.
+
+### Cost of sending
+
+Measured in Node with the same code (Cloudflare's runtime was not measured): about **1 ms of CPU per message** for the encryption (a new key pair and key agreement each time, plus the AES step), about 0.1 ms to sign a VAPID token when one is needed and almost nothing when it's reused. The free plan allows about 10 ms of CPU per invocation, and waiting for the push service doesn't count as CPU. The scheduler should therefore send only a few notifications per invocation, and it also has to stay within the free plan's limit of about 50 subrequests per invocation, which D1 queries and outgoing requests both count towards.
 
 ### Logging
 
@@ -139,6 +200,8 @@ Measured with D1's `meta.rows_written` in the tests, then extended to the parts 
 | Upload that changes the schedule | the alerts above, plus 1 (the hash and `last_seen_at`) |
 | Upload that doesn't change it | **0** (1 row, at most once a day, to refresh `last_seen_at`) |
 | Upload refused by the daily cap | **0** |
+| `POST /test-push`, delivered or failed | **0** (it only reads) |
+| `POST /test-push` that finds a dead subscription | 3 for the subscription, plus up to 3 for each of its alerts (it is deleted) |
 | The daily cap's counter | **0** extra (it rides in the subscription row that is already updated) |
 
 ### How many users
@@ -227,4 +290,4 @@ The token also needs **Account > D1 > Edit** to apply migrations: check that you
 
 After the first deploy the Worker is at `https://session-clock-push.<your-account-subdomain>.workers.dev/health`. The subdomain is shown in the deploy log and under Workers & Pages in the Cloudflare dashboard.
 
-The workflow ends with a smoke test: it calls `<PUSH_WORKER_URL>/health` and fails unless the response is 200, `ok` is `true` and `version` equals the commit just deployed. It retries for about 30 seconds because a new deploy can take a moment to go live. Set the repository **variable** (not a secret) `PUSH_WORKER_URL` to the Worker's base URL, without `/health`.
+The workflow ends with a smoke test: it calls `<PUSH_WORKER_URL>/health` and fails unless the response is 200, `ok` is `true`, `version` equals the commit just deployed, **and `pushConfigured` is `true`**. A deploy succeeds even if the `VAPID_PRIVATE_KEY` secret was never set, so this is what catches it. If the new version is live but `pushConfigured` isn't `true`, it fails straight away with instructions instead of retrying, because waiting won't help. It retries for about 30 seconds because a new deploy can take a moment to go live. Set the repository **variable** (not a secret) `PUSH_WORKER_URL` to the Worker's base URL, without `/health`.

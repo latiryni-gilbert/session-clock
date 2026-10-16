@@ -24,3 +24,8 @@ export const DAY_MS = 24 * 60 * 60 * 1000
 // The most alerts one subscription may have added + removed per UTC day. A first upload is about 150 and normal
 // days a few dozen, so this only stops a client stuck in a loop. Worth about 1,200 to 2,000 rows written a day.
 export const MAX_DAILY_ALERT_CHANGES = 400
+
+// The test notification (POST /test-push): what it says, and how long a push service may hold it for an offline device.
+export const TEST_PUSH_TITLE = 'Session Clock'
+export const TEST_PUSH_BODY = 'Background alerts are working.'
+export const TEST_PUSH_TTL_SECONDS = 60

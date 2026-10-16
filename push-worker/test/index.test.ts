@@ -2,6 +2,7 @@ import { env, exports } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { SERVICE_NAME } from '../src/constants'
 import worker from '../src/index'
+import { newVapidPair } from './webpush-helpers'
 
 const SHA = '0123456789abcdef0123456789abcdef01234567' // injected by vitest.config.ts, like a deploy would
 
@@ -13,7 +14,7 @@ describe('GET /health', () => {
     const res = await get('/health')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('application/json')
-    expect(await res.json()).toEqual({ ok: true, service: 'session-clock-push', version: SHA })
+    expect(await res.json()).toEqual({ ok: true, service: 'session-clock-push', version: SHA, pushConfigured: true })
   })
 
   it('takes the version from the GIT_COMMIT_SHA binding that the deploy sets', async () => {
@@ -73,5 +74,51 @@ describe('every other path', () => {
     for (const method of ['GET', 'POST', 'PUT', 'DELETE', 'HEAD']) {
       expect((await get('/nothing-here', { method })).status, method).toBe(404)
     }
+  })
+})
+
+describe('GET /health: pushConfigured', () => {
+  const health = async (bindings: Record<string, unknown> = {}) => {
+    const res = await worker.fetch(new Request('https://example.com/health'), { ...env, ...bindings } as unknown as Cloudflare.Env)
+    return (await res.json()) as Record<string, unknown>
+  }
+
+  it('is true when the VAPID keys are present and are a matching pair', async () => {
+    expect((await health()).pushConfigured).toBe(true)
+  })
+
+  it('is false when the private key (a secret that may never have been set) is missing', async () => {
+    expect((await health({ VAPID_PRIVATE_KEY: undefined })).pushConfigured).toBe(false)
+  })
+
+  it('is false when the private key does not belong to the public key', async () => {
+    const other = await newVapidPair()
+    expect((await health({ VAPID_PRIVATE_KEY: other.privateKey })).pushConfigured).toBe(false)
+  })
+
+  it.each([
+    ['the public key', { VAPID_PUBLIC_KEY: undefined }],
+    ['the subject', { VAPID_SUBJECT: undefined }],
+    ['a usable subject', { VAPID_SUBJECT: 'not a url' }],
+    ['a private key that is not a key', { VAPID_PRIVATE_KEY: 'garbage' }],
+  ])('is false without %s', async (_name, bindings) => {
+    expect((await health(bindings)).pushConfigured).toBe(false)
+  })
+
+  it('is only ever a boolean, and never contains a key, whether configured or not', async () => {
+    const other = await newVapidPair()
+    for (const bindings of [{}, { VAPID_PRIVATE_KEY: undefined }, { VAPID_PRIVATE_KEY: other.privateKey }]) {
+      const body = await health(bindings)
+      expect(typeof body.pushConfigured).toBe('boolean')
+      expect(Object.keys(body).sort()).toEqual(['ok', 'pushConfigured', 'service', 'version'])
+      const text = JSON.stringify(body)
+      for (const secret of [env.VAPID_PRIVATE_KEY!, env.VAPID_PUBLIC_KEY, other.privateKey, other.publicKey]) expect(text).not.toContain(secret)
+    }
+  })
+
+  it('does not change what HEAD returns', async () => {
+    const res = await get('/health', { method: 'HEAD' })
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('')
   })
 })

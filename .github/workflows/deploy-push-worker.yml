@@ -68,6 +68,7 @@ jobs:
           command: deploy --var GIT_COMMIT_SHA:${{ github.sha }}
 
       # A new deploy can take a moment to go live everywhere, so retry for about 30 seconds.
+      # It also checks that the push keys work: a deploy succeeds even if the VAPID_PRIVATE_KEY secret was never set.
       - name: Smoke test the deployed Worker
         env:
           # Repository variable (not a secret): the Worker's base URL, e.g. https://session-clock-push.<subdomain>.workers.dev
@@ -96,14 +97,19 @@ jobs:
             echo "Response body:"
             cat response.json 2>/dev/null || true
             echo
-            if [ "$status" = "200" ] && jq -e --arg sha "$EXPECTED_SHA" '.ok == true and .version == $sha' response.json >/dev/null 2>&1; then
-              echo "Smoke test passed: $url is healthy and running $EXPECTED_SHA."
+            if [ "$status" = "200" ] && jq -e --arg sha "$EXPECTED_SHA" '.ok == true and .version == $sha and .pushConfigured == true' response.json >/dev/null 2>&1; then
+              echo "Smoke test passed: $url is healthy, running $EXPECTED_SHA, and has working push keys."
               exit 0
+            fi
+            # The new version is live but cannot send push notifications. Waiting won't fix that, so don't retry.
+            if [ "$status" = "200" ] && jq -e --arg sha "$EXPECTED_SHA" '.ok == true and .version == $sha and .pushConfigured != true' response.json >/dev/null 2>&1; then
+              echo "::error title=Push keys are not configured::$url is running $EXPECTED_SHA, but /health says pushConfigured is not true: the VAPID_PRIVATE_KEY secret is missing, or it is not the private half of VAPID_PUBLIC_KEY (or VAPID_SUBJECT is invalid). Set it with 'cd push-worker && npx wrangler secret put VAPID_PRIVATE_KEY', then re-run this workflow. Deploys keep secrets, so this is only needed once."
+              exit 1
             fi
             if [ "$attempt" -lt "$attempts" ]; then
               echo "Not healthy yet; retrying in ${delay}s..."
               sleep "$delay"
             fi
           done
-          echo "::error title=Smoke test failed::$url did not return 200 with ok=true and version=$EXPECTED_SHA after $attempts attempts. See the last response above."
+          echo "::error title=Smoke test failed::$url did not return 200 with ok=true, version=$EXPECTED_SHA and pushConfigured=true after $attempts attempts. See the last response above."
           exit 1
