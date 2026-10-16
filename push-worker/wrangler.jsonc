@@ -9,7 +9,15 @@
   // from environment variables. GIT_COMMIT_SHA below is only the local/default value; the deploy
   // workflow overrides it with the real commit (wrangler deploy --var GIT_COMMIT_SHA:<sha>).
   "vars": {
-    "GIT_COMMIT_SHA": "dev"
+    "GIT_COMMIT_SHA": "dev",
+    // Web Push (VAPID) identity. Both are public: the browser needs the public key to subscribe.
+    "VAPID_PUBLIC_KEY": "BNwrDo_4rqZSEExYbpQeGAL_ZxSY-eITMuB_LKhMOO5NA3CCVylt5AxQbVbI1bfIXYC8A8gGeJWrmxbGvTjnKwQ",
+    "VAPID_SUBJECT": "https://sessionclock.vercel.app"
+  },
+  // The matching private key is a Cloudflare secret, never a file: `wrangler secret put VAPID_PRIVATE_KEY`.
+  // Deploys keep it. (For `wrangler dev`, put a local pair in .dev.vars, which git ignores; see README.md.)
+  "secrets": {
+    "required": ["VAPID_PRIVATE_KEY"]
   },
   // The D1 database. The ID identifies the database; it is not a credential.
   "d1_databases": [
@@ -28,6 +36,9 @@
     // Every PUT /schedule, per client IP: bounds reads and CPU, including for unchanged uploads.
     { "name": "SCHEDULE_LIMITER", "namespace_id": "1002", "simple": { "limit": 10, "period": 60 } },
     // PUT /schedule uploads that actually change something, per subscription id: bounds D1 writes.
-    { "name": "SCHEDULE_CHANGE_LIMITER", "namespace_id": "1003", "simple": { "limit": 2, "period": 60 } }
+    { "name": "SCHEDULE_CHANGE_LIMITER", "namespace_id": "1003", "simple": { "limit": 2, "period": 60 } },
+    // POST /test-push: one test notification a minute per subscription, and a ceiling per client IP.
+    { "name": "TEST_PUSH_LIMITER", "namespace_id": "1004", "simple": { "limit": 1, "period": 60 } },
+    { "name": "TEST_PUSH_IP_LIMITER", "namespace_id": "1005", "simple": { "limit": 10, "period": 60 } }
   ]
 }

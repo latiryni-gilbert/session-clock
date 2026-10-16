@@ -1,10 +1,13 @@
-import { LAST_SEEN_REFRESH_MS, MAX_DAILY_ALERT_CHANGES } from './constants'
+import { LAST_SEEN_REFRESH_MS, MAX_DAILY_ALERT_CHANGES, TEST_PUSH_BODY, TEST_PUSH_TITLE, TEST_PUSH_TTL_SECONDS } from './constants'
 import { randomSecret, safeEqual, sha256Hex } from './crypto'
 import { HttpError, json, readJsonObject } from './http'
 import { enforceRateLimit } from './ratelimit'
 import { canonicalAlerts, hashSchedule, planChanges, type ExistingAlert } from './schedule'
 import { secondsUntilUtcMidnight, utcDay } from './time'
+import { utf8 } from './base64url'
 import { validateAlerts, validateSubscription } from './validate'
+import { loadVapidKeys } from './vapid'
+import { sendWebPush } from './webpush'
 
 // A hash no secret can produce, compared against when the id doesn't exist so that an unknown id
 // takes the same work (and gives the same answer) as a wrong secret.
@@ -18,6 +21,9 @@ interface Authenticated {
   lastSeenAt: number
   changesDay: number
   changesCount: number
+  endpoint: string
+  p256dh: string
+  auth: string
 }
 
 /** Checks the id + secret in the request body. Throws the same 401 whether the id is unknown or the secret is wrong. */
@@ -26,12 +32,30 @@ async function authenticate(env: Cloudflare.Env, body: Record<string, unknown>):
   if (typeof id !== 'string' || typeof secret !== 'string' || id.length > 64 || secret.length > 256) {
     throw unauthorized()
   }
-  const row = await env.DB.prepare('SELECT secret_hash, schedule_hash, last_seen_at, changes_day, changes_count FROM subscriptions WHERE id = ?')
+  const row = await env.DB.prepare('SELECT secret_hash, schedule_hash, last_seen_at, changes_day, changes_count, endpoint, p256dh, auth FROM subscriptions WHERE id = ?')
     .bind(id)
-    .first<{ secret_hash: string; schedule_hash: string | null; last_seen_at: number; changes_day: number; changes_count: number }>()
+    .first<{
+      secret_hash: string
+      schedule_hash: string | null
+      last_seen_at: number
+      changes_day: number
+      changes_count: number
+      endpoint: string
+      p256dh: string
+      auth: string
+    }>()
   const matches = safeEqual(await sha256Hex(secret), row?.secret_hash ?? NO_SUCH_HASH)
   if (!row || !matches) throw unauthorized()
-  return { id, scheduleHash: row.schedule_hash, lastSeenAt: row.last_seen_at, changesDay: row.changes_day, changesCount: row.changes_count }
+  return {
+    id,
+    scheduleHash: row.schedule_hash,
+    lastSeenAt: row.last_seen_at,
+    changesDay: row.changes_day,
+    changesCount: row.changes_count,
+    endpoint: row.endpoint,
+    p256dh: row.p256dh,
+    auth: row.auth,
+  }
 }
 
 /** POST /subscribe: store (or update) a browser push subscription and return its id and a new secret. */
@@ -159,4 +183,44 @@ export async function unsubscribe(request: Request, env: Cloudflare.Env): Promis
   const { id } = await authenticate(env, await readJsonObject(request))
   await env.DB.prepare('DELETE FROM subscriptions WHERE id = ?').bind(id).run()
   return json({ ok: true })
+}
+
+/** GET /vapid-public-key: the key the browser passes to pushManager.subscribe as applicationServerKey. */
+export async function vapidPublicKey(_request: Request, env: Cloudflare.Env): Promise<Response> {
+  const keys = await loadVapidKeys(env)
+  if (!keys) throw new HttpError(503, 'Push notifications are not configured on the server')
+  // The key changes only if someone replaces it, so browsers may keep it for an hour.
+  return json({ publicKey: keys.publicKey }, 200, { 'cache-control': 'public, max-age=3600' })
+}
+
+const TEST_PAYLOAD = utf8(JSON.stringify({ title: TEST_PUSH_TITLE, body: TEST_PUSH_BODY }))
+
+/**
+ * POST /test-push: send this subscription one notification, to prove background alerts work.
+ * A 404 or 410 from the push service means the browser has dropped the subscription, so it is deleted
+ * (its alerts go with it). Any other failure deletes nothing.
+ */
+export async function testPush(request: Request, env: Cloudflare.Env): Promise<Response> {
+  const sub = await authenticate(env, await readJsonObject(request))
+  if (!(await loadVapidKeys(env))) throw new HttpError(503, 'Push notifications are not configured on the server')
+  await enforceRateLimit(env.TEST_PUSH_LIMITER, sub.id)
+
+  const result = await sendWebPush(env, sub, TEST_PAYLOAD, { ttl: TEST_PUSH_TTL_SECONDS, urgency: 'high' })
+  switch (result.kind) {
+    case 'sent':
+      return json({ ok: true })
+    case 'gone':
+      await env.DB.prepare('DELETE FROM subscriptions WHERE id = ?').bind(sub.id).run()
+      throw new HttpError(410, 'The push service says this subscription no longer exists, so it was removed; subscribe again')
+    case 'rejected':
+      throw new HttpError(502, `The push service refused the message (status ${result.status})`)
+    case 'unreachable':
+      throw new HttpError(502, 'Could not reach the push service')
+    case 'unsupported':
+      throw new HttpError(502, 'This subscription is not on a push service the server sends to')
+    case 'invalid-subscription':
+      throw new HttpError(422, "This subscription's keys are not valid; subscribe again")
+    case 'not-configured':
+      throw new HttpError(503, 'Push notifications are not configured on the server')
+  }
 }

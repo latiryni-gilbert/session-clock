@@ -9,6 +9,13 @@ declare namespace Cloudflare {
     SUBSCRIBE_LIMITER: RateLimit
     SCHEDULE_LIMITER: RateLimit
     SCHEDULE_CHANGE_LIMITER: RateLimit
+    TEST_PUSH_LIMITER: RateLimit
+    TEST_PUSH_IP_LIMITER: RateLimit
+    // Web Push (VAPID). The public key and subject are plain vars in wrangler.jsonc. The private key is a
+    // Cloudflare secret (`wrangler secret put VAPID_PRIVATE_KEY`), so it can be missing, and the code checks.
+    VAPID_PUBLIC_KEY: string
+    VAPID_SUBJECT: string
+    VAPID_PRIVATE_KEY?: string
     // Tests only: the migrations to apply to the test database (see vitest.config.ts).
     TEST_MIGRATIONS: import('@cloudflare/vitest-plugin').D1Migration[]
   }
