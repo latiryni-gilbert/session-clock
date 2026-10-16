@@ -29,8 +29,10 @@ import type { PresetGroup } from './tradingWindow'
  * Raises an alert banner (and a quiet sound) when a window's alert time arrives.
  * Pass only the windows that are switched on. Each occurrence alerts once: shown alerts are
  * remembered in localStorage, so a refresh during the alert minute doesn't repeat it.
+ * `pushCoversAlerts`: background alerts are on and their schedule is uploaded, so the Worker's push already shows the
+ * system notification; the in-app one is skipped (the banner and sound stay).
  */
-export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: Date, newsAlertLead: AlertLead | null = null) {
+export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: Date, newsAlertLead: AlertLead | null = null, pushCoversAlerts = false) {
   const [banners, setBanners] = useState<DueAlert[]>([])
   const firedRef = useRef<FiredAlerts | null>(null)
   if (firedRef.current === null) firedRef.current = loadFired()
@@ -77,7 +79,7 @@ export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: D
       })
       // If the browser refuses (Chrome on Android) nothing is thrown: the banner is already added, and
       // notifications are marked unavailable for the session (see hasNotificationFailed below).
-      if (delivery.notification) for (const d of due) showAlertNotification(bannerMessage(d, now), d.key)
+      if (delivery.notification && !pushCoversAlerts) for (const d of due) showAlertNotification(bannerMessage(d, now), d.key)
     }
     setBanners((prev) => {
       const added = due.filter((d) => !prev.some((p) => p.key === d.key))
@@ -85,7 +87,7 @@ export function useAlerts(groups: PresetGroup[], settings: AlertSettings, now: D
       const live = all.filter((b) => !isBannerExpired(b, now))
       return added.length === 0 && live.length === prev.length && live.every((b, i) => b === prev[i]) ? prev : live
     })
-  }, [groups, settings.lead, settings.soundOn, settings.notificationsOn, newsAlertLead, now])
+  }, [groups, settings.lead, settings.soundOn, settings.notificationsOn, newsAlertLead, pushCoversAlerts, now])
 
   const dismiss = (key: string) => setBanners((prev) => prev.filter((b) => b.key !== key))
   // Expired banners are dropped in the effect above; filtering here too means one is never drawn for a frame.

@@ -19,6 +19,9 @@ import {
   type DisabledIds,
 } from '../lib/windowSettings'
 import { ADD_WINDOW_FORM_ID, AddWindowForm } from './AddWindowForm'
+import type { PushEnv } from '../lib/push/browser'
+import type { ScheduleStatus } from '../lib/push/useScheduleSync'
+import type { PushChange } from '../lib/push/controller'
 import { BackgroundAlerts } from './BackgroundAlerts'
 import { Switch } from './Switch'
 
@@ -42,6 +45,10 @@ interface Props {
   onNewsAlertLeadChange: (lead: AlertLead | null) => void
   detectedTimeZone: string
   saveFailed: boolean
+  /** Background alerts: the browser pieces, what the schedule upload did, and how the section reports changes. */
+  pushEnv?: PushEnv
+  pushStatus?: ScheduleStatus
+  onPushChange?: PushChange
 }
 
 type View = 'list' | 'form' | 'confirm'
@@ -68,6 +75,9 @@ export function Settings({
   onNewsAlertLeadChange,
   detectedTimeZone,
   saveFailed,
+  pushEnv,
+  pushStatus,
+  onPushChange,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<View>('list')
@@ -309,7 +319,7 @@ export function Settings({
                       </p>
                     )}
                   </section>
-                  <BackgroundAlerts />
+                  <BackgroundAlerts env={pushEnv} schedule={pushStatus} onChange={onPushChange} />
                   <section>
                     <h3 className="text-xs font-medium uppercase tracking-[0.2em] text-neutral-400">News events</h3>
                     <div className="mt-1 flex items-center justify-between gap-3 py-1">

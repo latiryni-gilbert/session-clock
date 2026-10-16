@@ -44,7 +44,7 @@ describe('visibility', () => {
   it('has a "Background alerts (beta)" heading and a one-line explanation', async () => {
     await show()
     expect(screen.getByRole('heading', { level: 3, name: 'Background alerts (beta)' })).toBeInTheDocument()
-    expect(screen.getByText(/notified even when Session Clock is closed/)).toBeInTheDocument()
+    expect(screen.getByText(/alerts as notifications even when Session Clock is closed/)).toBeInTheDocument()
   })
 })
 
@@ -406,5 +406,85 @@ describe('messages from an earlier action', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     finish(new Response(null, { status: 200 }))
     await screen.findByText(/Test notification sent/)
+  })
+})
+
+describe('the schedule', () => {
+  const base = { active: true, throughMs: Date.parse('2026-12-07T20:00:00Z'), shortened: false, problem: null, reset: null } as const
+  const showWith = async (schedule: Parameters<typeof BackgroundAlerts>[0]['schedule'], onChange?: () => void) => {
+    const fake = makeEnv(enabled)
+    render(<BackgroundAlerts env={fake.env} schedule={schedule} onChange={onChange} />)
+    await screen.findByRole('button', { name: 'Send test notification' })
+    return fake
+  }
+
+  it('says how far alerts are scheduled, and that they continue for about 2 weeks after the app was last opened', async () => {
+    await showWith(base)
+    expect(screen.getByText(/^Scheduled through (Sat|Sun|Mon), Dec \d+\.$/)).toBeInTheDocument()
+    expect(screen.getByText(/continue for about 2 weeks after you last open Session Clock/)).toBeInTheDocument()
+  })
+
+  it('says nothing is scheduled yet before the first upload', async () => {
+    await showWith({ ...base, throughMs: null })
+    expect(screen.getByText('Your alerts haven’t been scheduled yet.')).toBeInTheDocument()
+    expect(screen.queryByText(/Scheduled through/)).not.toBeInTheDocument()
+  })
+
+  it('says when the schedule was shortened', async () => {
+    await showWith({ ...base, shortened: true })
+    expect(screen.getByText(/only the nearest are scheduled/)).toBeInTheDocument()
+  })
+
+  it('does not mention shortening otherwise', async () => {
+    await showWith(base)
+    expect(screen.queryByText(/only the nearest/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['retry-later', /asked us to wait/],
+    ['failed', /try again the next time you open the app/],
+  ] as const)('explains a %s problem', async (problem, text) => {
+    await showWith({ ...base, problem })
+    expect(screen.getByText(text)).toBeInTheDocument()
+  })
+
+  it('shows no schedule lines when background alerts are off', async () => {
+    await show({ permission: 'default' })
+    expect(screen.queryByText(/Scheduled through|continue for about 2 weeks/)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['unauthorized', /no longer recognises this device/],
+    ['gone', /subscription has expired/],
+  ] as const)('after a sync reset (%s) says so and offers Enable again', async (reset, text) => {
+    const fake = makeEnv({ permission: 'granted' })
+    render(<BackgroundAlerts env={fake.env} schedule={{ active: false, throughMs: null, shortened: false, problem: null, reset }} />)
+    expect(await screen.findByText(text)).toBeInTheDocument()
+    expect(enableButton()).toBeInTheDocument()
+  })
+
+  it('tells the app about each change: detected, enabled, test reset, turned off', async () => {
+    const onChange = vi.fn()
+    const fake = makeEnv({ permission: 'default' })
+    const user = userEvent.setup()
+    render(<BackgroundAlerts env={fake.env} onChange={onChange} />)
+    await screen.findByRole('button', { name: 'Enable background alerts' })
+    expect(onChange).toHaveBeenLastCalledWith({ kind: 'off' }, 'detected')
+    await user.click(enableButton())
+    await screen.findByRole('button', { name: 'Send test notification' })
+    expect(onChange).toHaveBeenLastCalledWith({ kind: 'on' }, 'enabled')
+    await user.click(offButton())
+    await screen.findByRole('button', { name: 'Enable background alerts' })
+    expect(onChange).toHaveBeenLastCalledWith({ kind: 'off' }, 'off')
+  })
+
+  it('tells the app when the test button finds the subscription gone', async () => {
+    const onChange = vi.fn()
+    const fake = makeEnv({ ...enabled, routes: { '/test-push': 410 } })
+    const user = userEvent.setup()
+    render(<BackgroundAlerts env={fake.env} onChange={onChange} />)
+    await user.click(await screen.findByRole('button', { name: 'Send test notification' }))
+    await screen.findByRole('button', { name: 'Enable background alerts' })
+    expect(onChange).toHaveBeenLastCalledWith({ kind: 'off' }, 'test')
   })
 })
