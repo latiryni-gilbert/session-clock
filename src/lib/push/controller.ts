@@ -6,6 +6,7 @@ import {
 } from './browser'
 import { fetchPublicKey, registerSubscription, removeSubscription, sendTestPush, type FailureReason } from './client'
 import { clearPushAccount, loadPushAccount, savePushAccount } from './storage'
+import { clearUploadState } from './uploadState'
 
 // The steps behind the Background alerts buttons. Each returns a plain result for the screen to turn into words.
 // Rules for everything here: never log, and never put the secret or the subscription into a result.
@@ -20,6 +21,9 @@ export type PushState =
   /** Not on. `note` says why a previously enabled device is no longer working. */
   | { kind: 'off'; note?: OffNote }
   | { kind: 'on' }
+
+/** What the Settings section tells the app when background alerts change, and why. */
+export type PushChange = (state: PushState, cause: 'detected' | 'enabled' | 'test' | 'off') => void
 
 const attempt = async <T>(fn: () => Promise<T>): Promise<T | undefined> => {
   try {
@@ -174,6 +178,8 @@ export async function enableBackgroundAlerts(env: PushEnv): Promise<EnableResult
     return { ok: false, reason: 'storage-failed' }
   }
 
+  clearUploadState(env.storage) // a new subscription has no schedule yet
+
   // A device that was enabled before and lost its subscription leaves a dead one on the Worker: remove it
   // (it is a different id; the same endpoint would have kept its id). Failing to is harmless.
   if (previous && previous.id !== account.id) await removeSubscription(workerUrl, previous, env.fetch)
@@ -193,6 +199,13 @@ export type TestResult =
   /** `reset`: the saved id and secret and the browser subscription were cleared, so it must be enabled again. */
   | { ok: false; reason: FailureReason | 'not-enabled'; reset: boolean }
 
+/** The Worker no longer knows this device: drop the browser's subscription and the saved id, secret and upload record. */
+export async function resetDevice(env: PushEnv): Promise<void> {
+  await unsubscribeBrowser(env)
+  clearPushAccount(env.storage)
+  clearUploadState(env.storage)
+}
+
 /** Has the Worker send this device a test notification. A subscription the Worker has dropped is reset. */
 export async function sendTestNotification(env: PushEnv): Promise<TestResult> {
   const account = loadPushAccount(env.storage)
@@ -201,8 +214,7 @@ export async function sendTestNotification(env: PushEnv): Promise<TestResult> {
   const result = await sendTestPush(env.workerUrl, account, env.fetch)
   if (result.ok) return { ok: true }
   if (result.reason === 'gone' || result.reason === 'unauthorized') {
-    await unsubscribeBrowser(env)
-    clearPushAccount(env.storage)
+    await resetDevice(env)
     return { ok: false, reason: result.reason, reset: true }
   }
   return { ok: false, reason: result.reason, reset: false }
@@ -228,5 +240,6 @@ export async function turnOffBackgroundAlerts(env: PushEnv): Promise<TurnOffResu
     serverRemoved = result.ok || result.reason === 'unauthorized' || result.reason === 'gone'
   }
   await unsubscribeBrowser(env)
+  clearUploadState(env.storage)
   return { serverRemoved, cleared: clearPushAccount(env.storage) }
 }

@@ -15,6 +15,8 @@ export type FailureReason =
 export interface Failure {
   ok: false
   reason: FailureReason
+  /** From a Retry-After header (429, 503): how long the Worker asks to wait. */
+  retryAfterSeconds?: number
 }
 export type Result<T> = ({ ok: true } & T) | Failure
 
@@ -94,4 +96,27 @@ export async function removeSubscription(baseUrl: string, account: PushAccount, 
   if (!('response' in sent)) return sent
   void sent.response.body?.cancel().catch(() => {})
   return sent.response.ok ? { ok: true } : { ok: false, reason: reasonFor(sent.response.status) }
+}
+
+const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60
+
+/** The seconds in a Retry-After header, or undefined if it is missing or not a plain number (dates are not used). */
+export function parseRetryAfter(value: string | null | undefined): number | undefined {
+  if (!value || !/^\d{1,9}$/.test(value.trim())) return undefined
+  return Math.min(Number(value.trim()), MAX_RETRY_AFTER_SECONDS)
+}
+
+/** PUT /schedule: make the Worker's future alerts for this device match `alerts`. */
+export async function uploadSchedule(
+  baseUrl: string,
+  account: PushAccount,
+  alerts: readonly { fireAt: string; title: string; body: string }[],
+  fetchFn: Fetch,
+): Promise<Result<object>> {
+  const sent = await call(fetchFn, `${baseUrl}/schedule`, post({ id: account.id, secret: account.secret, alerts }, 'PUT'))
+  if (!('response' in sent)) return sent
+  void sent.response.body?.cancel().catch(() => {})
+  if (sent.response.ok) return { ok: true }
+  const retryAfterSeconds = parseRetryAfter(sent.response.headers.get('retry-after'))
+  return { ok: false, reason: reasonFor(sent.response.status), ...(retryAfterSeconds !== undefined && { retryAfterSeconds }) }
 }
