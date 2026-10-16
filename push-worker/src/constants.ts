@@ -42,6 +42,17 @@ export const LATE_LIMIT_MS = 10 * 60 * 1000
 export const DEFAULT_PUSHES_PER_RUN = 3
 export const MAX_PUSHES_PER_RUN_LIMIT = 20
 
+// An alert is deleted after this many failed pushes (a 404 or 410 deletes the subscription instead, and is not a failure).
+export const MAX_ATTEMPTS = 3
+
+// One subscription may use at most this many of a run's pushes, and only after its earlier one in the run succeeded.
+// The query also returns at most this many alerts per subscription, so one subscription with hundreds of due alerts
+// can't fill the list and hide everyone else's. Together with CANDIDATES_PER_PUSH this guarantees a run can fill
+// all its slots whenever enough alerts are usable: each failing subscription wastes at most 1 push and
+// (MAX_PER_SUBSCRIPTION_PER_RUN - 1) candidates, and there can be at most one failing subscription per push.
+export const MAX_PER_SUBSCRIPTION_PER_RUN = 3
+export const CANDIDATES_PER_PUSH = 3
+
 // Alerts found already too late are deleted without a push, at most this many a run, so a backlog (after an
 // outage, say) drains steadily and can never crowd out alerts that are still on time.
 export const EXPIRED_PER_RUN = 20
