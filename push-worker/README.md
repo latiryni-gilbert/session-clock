@@ -170,33 +170,44 @@ Two cron triggers in `wrangler.jsonc` start it: **every minute** (send what is d
 
 ### Every minute
 
-1. **One query** fetches, oldest first, the unsent alerts whose `fire_at` is now or earlier, with their subscription's endpoint and keys: up to the batch size that are still on time, plus up to 20 that are already too late. A run with nothing due **costs exactly that one read query and writes nothing**.
+1. **One query** fetches the unsent alerts whose `fire_at` is now or earlier, with their subscription's endpoint and keys: up to 3 × the batch size that are still on time, ranked as described under [Fair retries](#fair-retries), plus up to 20 that are already too late. A run with nothing due **costs exactly that one read query and writes nothing**.
 2. Alerts **more than 10 minutes late are deleted without a push** (one query for all of them). A late session alert is misleading, so it is dropped rather than sent. Because they come out of the same query and have their own allowance of 20 a run, a backlog of late alerts (after an outage, say) can never crowd out the ones still on time.
-3. Each on-time alert is pushed as `{ "title", "body", "tag" }`, all in parallel, and what the push service says decides what happens:
+3. On-time alerts are pushed as `{ "title", "body", "tag" }`, a few at a time (different subscriptions in parallel, one subscription's alerts one after another), and what the push service says decides what happens:
 
 | Push service says | What happens | Counted as |
 |---|---|---|
 | any `2xx` | the alert is **deleted at once** (cheaper than marking it sent and deleting later) | `sent` |
 | `404` or `410` | the subscription is deleted **with all its alerts**, as `/test-push` does | `gone` |
-| anything else: another error status, a redirect, no answer, a host the Worker won't send to, unusable keys, push keys not configured | the alert **stays** and is tried again next minute | `failed` |
+| anything else: another error status, a redirect, no answer, a host the Worker won't send to, unusable keys | the alert **stays** with its `attempts` raised by one, to be tried again in a later run; **the third failure deletes it** | `failed` (and `dropped` for the third) |
 | (the alert was more than 10 minutes late) | deleted without a push | `expired` |
 
-   Each alert is deleted straight after its own push, not all together at the end. The rows written are the same, but a run that is cut off (CPU limit) keeps what it got done instead of sending the same alerts again every minute.
-4. If more are due than the batch allows, the rest **carry over** to the next run, oldest first. A failing alert is retried every minute until it is 10 minutes late, then deleted unsent.
+   Each alert is deleted (or its `attempts` raised) straight after its own push, not all together at the end. The rows written are the same, but a run that is cut off (CPU limit) keeps what it got done instead of sending the same alerts again every minute. If the push keys are missing or don't match, nothing is pushed and **no alert is counted against**: that isn't the alerts' fault (they are logged as `skipped`, and the daily smoke test is what catches it).
+4. If more are due than the batch allows, the rest **carry over** to the next run. An alert is tried at most 3 times, and sooner than that only if it gets 10 minutes late first.
 
 **Never twice.** Every alert has a tag, `alert-<id>` (ids are never reused), sent in the payload as `tag` and as the push's `Topic` header. The push service replaces a still-queued message with the same topic, so a retry of a push that did get through can't leave two waiting, and the tag lets the service worker show each alert once on the device. The web app's service worker doesn't use `tag` yet; it will need to pass it to `showNotification`. The push also tells the push service to drop the message when it would be more than 10 minutes late (`TTL` is what's left of that time) and marks it urgent.
 
 Delivery is **at least once**, not exactly once: if a run is cut off between a push and its delete, the alert goes out again the next minute. That is what the tag and topic are for.
+
+### Fair retries
+
+One subscription whose pushes fail must not hold up everyone else's alerts. Four rules together do that (`test/fair-retries.test.ts` covers each):
+
+1. **Order: first attempts before retries, then oldest first.** An alert that has never been tried (`attempts = 0`) always goes before one that has failed already, whatever their ages, so **a failing subscription's retries can never take a slot from another subscription's first attempt**.
+2. **One failure ends a subscription's turn.** A subscription's alerts are pushed one after another; if a push to it fails, its other alerts are skipped for the rest of the run (they keep their `attempts` and are counted as `skipped`). One broken subscription costs one push per run, not the whole batch, and the slot it would have used goes to the next alerts in line.
+3. **A subscription is capped at 3 alerts in the list a run looks at.** Skipping alone isn't enough: the query only returns so many alerts, so a failing subscription with hundreds of due alerts, all older than a healthy subscription's one alert, would fill the list and the healthy alert would never be seen. The query ranks each subscription's alerts (a window function) and keeps the best 3 of each. The list is 3 × the batch size, which is always enough to fill every slot when enough alerts are usable: each failing subscription wastes at most one push and two list entries, and there can be at most one failing subscription per push.
+4. **Three strikes.** Each failed push (other than 404/410) raises the alert's `attempts` by one (one row written); the third deletes it. A failing alert is gone after at most three pushes, not retried until it is late. If the alert is also more than 10 minutes late, that rule applies first.
+
+The cost is that the query reads every unsent alert due in the last 10 minutes to rank them. That is a small, bounded set (a burst of 300 alerts due together means about 300 rows read per run for up to 10 minutes), well inside the 5 million daily reads. A quiet run still reads nothing. Runs push in up to 3 passes (a subscription can have 3 alerts in a run), each held to the 8-second push timeout, so a run takes at most about 24 seconds of waiting, none of it CPU.
 
 ### The log line
 
 One line per run, **counts only**, never an endpoint, key, secret or notification text:
 
 ```
-scheduler run: due=3 sent=2 failed=1 expired=0 gone=0
+scheduler run: due=3 sent=1 failed=1 expired=0 gone=1 dropped=0 skipped=2
 ```
 
-`due` is every alert the run picked up, and it always equals `sent + failed + expired + gone`. (`gone` counts due alerts dropped because their subscription is gone, not subscriptions.) A run that fails unexpectedly logs `scheduler failed: <kind of error>` and is recorded by Cloudflare as failed. See the lines in the dashboard (Workers Logs is switched on for this Worker; invocation logs are off, so requests and client addresses aren't recorded) or live with `npx wrangler tail`.
+`due` is the alerts the run dealt with, and it always equals `sent + failed + expired + gone`. `failed` pushes raised an alert's attempts, and `dropped` of them were the third failure, so the alert was deleted. `gone` counts alerts dropped because their subscription is gone, not subscriptions (including that subscription's other due alerts that the run saw, which were not pushed). `skipped` is **not** part of `due`: alerts the run saw but left alone, because an earlier push to the same subscription failed in the run (or the push keys aren't configured). A run that fails unexpectedly logs `scheduler failed: <kind of error>` and is recorded by Cloudflare as failed. See the lines in the dashboard (Workers Logs is switched on for this Worker; invocation logs are off, so requests and client addresses aren't recorded) or live with `npx wrangler tail`.
 
 ### The daily clean-up
 
@@ -206,7 +217,7 @@ At 03:17 UTC it deletes **subscriptions not seen for 30 days** with their alerts
 
 A run sends at most **3 pushes** (`MAX_PUSHES_PER_RUN` in `wrangler.jsonc`; any value from 1 to 20 is accepted, anything else means 3). The free plan allows about 10 ms of CPU and 50 subrequests per run, counting D1 queries.
 
-- **Subrequests are not the limit.** A run makes at most 1 read, 1 delete for late alerts, and for each push 1 request plus 1 delete: `2 + 2 × N`. That is 8 for N = 3, and it would still fit at N = 20 (42), which is why 20 is the ceiling.
+- **Subrequests are not the limit.** A run makes at most 1 read, 1 delete for late alerts, and for each push 1 request plus 1 follow-up query (the delete, the `attempts` update, or the subscription's delete): `2 + 2 × N`. That is 8 for N = 3, and it would still fit at N = 20 (42), which is why 20 is the ceiling.
 - **CPU is.** Measured with the real scheduler code in Node, with a fake database and an instant fake push service (so it excludes the real D1 and network handling, which adds something), CPU per run was:
 
 | | Pushes in the run | median | 90th percentile |
@@ -224,7 +235,8 @@ A run sends at most **3 pushes** (`MAX_PUSHES_PER_RUN` in `wrangler.jsonc`; any 
 ### Limits to know about
 
 - **Throughput is the ceiling on the free plan, well before the write budget.** 3 a minute is at most **180 an hour**, and since an alert more than 10 minutes late is dropped, only about **30 alerts that fall due in the same minute** are delivered in time. Alerts due in different minutes don't compete. That is plenty for a handful of testers and not for hundreds of users who all want the London-open alert at once. On the paid plan (30 s of CPU, 1,000 subrequests) raise `MAX_PUSHES_PER_RUN` (and its cap in `src/constants.ts` accordingly) and the ceiling goes up by the same factor.
-- **A subscription whose pushes keep failing blocks the front of the queue.** Failed alerts stay at the front (oldest first) and use the batch every minute until they are 10 minutes late, which holds newer alerts back for that time. Only unusual cases cause it (a push service answering `400`/`403`/`5xx` for one subscription, or keys that can never work). A test documents it; a per-subscription limit or a retry counter would fix it.
+- **Failing subscriptions can still use up the slots, for a while.** One failing subscription no longer holds anyone up (see [Fair retries](#fair-retries)), but a failing subscription still gets one push per run for each of its never-tried alerts, ahead of other subscriptions' alerts that are newer. So if as many subscriptions are failing as the batch has slots (3 by default, or 1 if you set it to 1), they can fill every slot of a run until each of their alerts has been tried once, which takes a few runs. The realistic cause is one push service going down (say all Google FCM subscriptions failing while Apple and Mozilla ones are fine). The fix would be to remember that a subscription is failing and rank its never-tried alerts after healthy subscriptions' (a column on the subscription, or the `attempts` of its other alerts); it isn't done because the rule you asked for ranks only by first attempt versus retry.
+- **A push service outage longer than about 3 minutes drops alerts.** Every failed push counts against an alert, whoever's fault it was, so an alert that gets three failures in a row during an outage is deleted. That is the same alert that would have been up to 3 minutes late and, a few minutes after, 10 minutes late anyway.
 - **No scheduling while D1 is out of its daily budget:** every run fails until 00:00 UTC (see [If the limit is hit](#if-the-limit-is-hit)).
 - **Not yet verified on Cloudflare:** the CPU numbers above, and a real push delivered by the scheduler to a real device.
 
@@ -243,7 +255,7 @@ The tests (`test/scheduler.test.ts`) cover batching and carry-over, the 10-minut
 D1 database `session-clock-push`, bound to the Worker as `DB` (see `wrangler.jsonc`; the database ID identifies it and is not a credential). The schema is the numbered files in `migrations/`:
 
 - `subscriptions`: `id`, `endpoint` (unique), `p256dh`, `auth`, `secret_hash` (SHA-256 of the secret; the secret itself is never stored), `schedule_hash` (fingerprint of the last accepted schedule; `NULL` before the first), `changes_day` and `changes_count` (the UTC day number and how many alerts were added + removed on it, for the daily cap), `created_at`, `last_seen_at`.
-- `alerts`: `id`, `subscription_id` (deleted with its subscription), `fire_at`, `title`, `body`, `sent_at` (`NULL` until sent).
+- `alerts`: `id`, `subscription_id` (deleted with its subscription), `fire_at`, `title`, `body`, `attempts` (failed pushes so far, 0 to 2; the third deletes the alert), `sent_at` (`NULL` until sent; the scheduler deletes sent alerts instead, so this only matters for old rows).
 - `idx_alerts_due`: a partial index on `alerts(fire_at) WHERE sent_at IS NULL`, so "unsent alerts due before time X" never scans sent alerts.
 
 All timestamps are UTC integer milliseconds since the Unix epoch.
@@ -273,6 +285,9 @@ Measured with D1's `meta.rows_written` in the tests, then extended to the parts 
 | An alert, deleted after its push is sent (the scheduler) | up to 3 |
 | An alert found more than 10 minutes late, deleted unsent | up to 3 |
 | **One alert from creation to deletion** | **about 6** (it used to be about 7, when it was marked sent and deleted later) |
+| A failed push (the scheduler raises the alert's `attempts`) | **1** (an update to a column no index uses) |
+| The third failed push (the alert is deleted) | up to 3 |
+| **An alert that always fails, from creation to deletion** | **about 8** (3 to add, 1 + 1 for the first two failures, 3 to delete), against about 6 for one that is sent |
 | A subscription the push service says is gone (the scheduler or `/test-push`) | 3, plus up to 3 for each of its alerts |
 | A subscription not seen for 30 days (the daily clean-up) | 3, plus up to 3 for each alert it still has |
 | An old row marked sent before the scheduler existed (the daily clean-up) | about 2 |
