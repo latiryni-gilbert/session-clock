@@ -478,6 +478,7 @@ describe('CORS', () => {
     expect(res.headers.get('access-control-allow-methods')).toBe('PUT, OPTIONS')
     expect(res.headers.get('access-control-allow-headers')).toBe('content-type')
     expect(res.headers.get('access-control-max-age')).toBe('86400')
+    expect(res.headers.get('access-control-expose-headers')).toBe('retry-after')
   })
 
   it('refuses a preflight from a blocked origin', async () => {

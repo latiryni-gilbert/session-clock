@@ -18,6 +18,8 @@ export function corsHeaders(origin: string, allowedMethod: string): Record<strin
     'access-control-allow-origin': origin,
     'access-control-allow-methods': `${allowedMethod}, OPTIONS`,
     'access-control-allow-headers': 'content-type',
+    // Without this the page can't read Retry-After on a cross-origin 429 or 503.
+    'access-control-expose-headers': 'retry-after',
     'access-control-max-age': '86400',
   }
 }
