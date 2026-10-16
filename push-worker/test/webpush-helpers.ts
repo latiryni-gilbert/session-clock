@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers'
 import { vi } from 'vitest'
 import { concat, fromBase64Url, toBase64Url, utf8 } from '../src/base64url'
 import worker from '../src/index'
+import { register } from './helpers'
 
 const ECDH = { name: 'ECDH', namedCurve: 'P-256' } as const
 const ES256 = { name: 'ECDSA', namedCurve: 'P-256' } as const
@@ -115,4 +116,17 @@ export async function newVapidPair() {
   const publicKey = toBase64Url(concat(new Uint8Array([4]), fromBase64Url(jwk.x!)!, fromBase64Url(jwk.y!)!))
   const pkcs8 = toBase64Url(new Uint8Array((await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer))
   return { publicKey, privateKey: jwk.d!, pkcs8 }
+}
+
+/** A subscription from a pretend browser, registered with the Worker (so it has a real id, secret and database row). */
+export async function registerBrowser(endpoint?: string) {
+  const browser = await makeBrowser(endpoint)
+  const account = await register(browser.subscription as never)
+  return { ...account, browser, endpoint: browser.subscription.endpoint }
+}
+
+/** Runs the Worker's scheduled handler as Cloudflare would for a cron trigger, optionally with some bindings replaced. */
+export async function runCron(cron: string, bindings: Record<string, unknown> = {}) {
+  const { createScheduledController } = await import('cloudflare:test')
+  await worker.scheduled(createScheduledController({ cron, scheduledTime: Date.now() }), { ...env, ...bindings } as unknown as Cloudflare.Env)
 }

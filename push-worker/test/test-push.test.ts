@@ -1,20 +1,14 @@
 import { env } from 'cloudflare:workers'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from '../src/index'
-import { DAY, alertIn, alertRows, count, register, resetDb, schedule } from './helpers'
-import { callWorker, makeBrowser, mockPushService, newVapidPair, verifyVapidHeader } from './webpush-helpers'
+import { DAY, alertIn, alertRows, count, resetDb, schedule } from './helpers'
+import { callWorker, mockPushService, newVapidPair, registerBrowser, verifyVapidHeader } from './webpush-helpers'
 
 const PROD = 'https://sessionclock.vercel.app'
 
 beforeEach(resetDb)
 afterEach(() => vi.restoreAllMocks())
 
-/** A subscription from a pretend browser, registered with the Worker. */
-async function registerBrowser(endpoint?: string) {
-  const browser = await makeBrowser(endpoint)
-  const account = await register(browser.subscription as never)
-  return { ...account, browser, endpoint: browser.subscription.endpoint }
-}
 const testPush = (id: string, secret: string, headers: Record<string, string> = {}, bindings: Record<string, unknown> = {}) =>
   callWorker('POST', '/test-push', { id, secret }, headers, bindings)
 const subscriptionExists = async (id: string) => (await env.DB.prepare('SELECT 1 AS x FROM subscriptions WHERE id = ?').bind(id).first()) !== null

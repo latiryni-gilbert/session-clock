@@ -12,7 +12,21 @@
     "GIT_COMMIT_SHA": "dev",
     // Web Push (VAPID) identity. Both are public: the browser needs the public key to subscribe.
     "VAPID_PUBLIC_KEY": "BNwrDo_4rqZSEExYbpQeGAL_ZxSY-eITMuB_LKhMOO5NA3CCVylt5AxQbVbI1bfIXYC8A8gGeJWrmxbGvTjnKwQ",
-    "VAPID_SUBJECT": "https://sessionclock.vercel.app"
+    "VAPID_SUBJECT": "https://sessionclock.vercel.app",
+    // How many alerts one scheduler run sends. 3 is safe on the free plan's 10 ms of CPU per run (see README.md).
+    // On a paid plan raise it (up to 20, the cap in src/constants.ts); a number below 1 or not a number means 3.
+    "MAX_PUSHES_PER_RUN": "3"
+  },
+  // The scheduler. The first runs every minute and sends due alerts; the second runs at 03:17 UTC for the daily
+  // clean-up and must equal DAILY_CRON in src/constants.ts. (The free plan allows 5 cron triggers per account.)
+  "triggers": {
+    "crons": ["* * * * *", "17 3 * * *"]
+  },
+  // Keep the scheduler's one log line per run in the dashboard (Workers Logs). Invocation logs stay off: they
+  // would record every request, including client IP addresses, and this Worker's own logging is all counts.
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false }
   },
   // The matching private key is a Cloudflare secret, never a file: `wrangler secret put VAPID_PRIVATE_KEY`.
   // Deploys keep it. (For `wrangler dev`, put a local pair in .dev.vars, which git ignores; see README.md.)
