@@ -32,11 +32,15 @@ export default defineConfig({
           { src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
-      workbox: {
+      // A hand-written worker (src/sw.ts) instead of a generated one: it adds the push handlers for background alerts.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
+      injectManifest: {
         // Everything the app needs is a static file, so cache it all (icons included) for offline use.
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
-        navigateFallback: 'index.html',
-        cleanupOutdatedCaches: true,
+        // A classic script, which every browser that can install the app supports.
+        rollupFormat: 'iife',
       },
     }),
   ],
