@@ -106,7 +106,7 @@ Each subscription may have at most **400 alerts added + removed per UTC day**. A
 
 `GET /vapid-public-key` gives the app the key it passes to `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })`. It answers `503` instead of handing out a key that can't be used (see [Configuration](#web-push-configuration)). The answer may be cached for an hour.
 
-`POST /test-push` takes `{ "id": "...", "secret": "..." }` and sends that subscription one notification, to prove background alerts work. The push message is JSON, `{ "title": "Session Clock", "body": "Background alerts are working." }`. (The app's service worker has no `push` handler yet, so for now nothing is shown even when delivery works; that comes with the app's side of this.) It is limited to **1 a minute per subscription** and 10 a minute per client IP, with the usual `429` and `Retry-After: 60`.
+`POST /test-push` takes `{ "id": "...", "secret": "..." }` and sends that subscription one notification, to prove background alerts work. The push message is JSON, `{ "title": "Session Clock", "body": "Background alerts are working." }`. (The app's service worker shows it as a notification.) It is limited to **1 a minute per subscription** and 10 a minute per client IP, with the usual `429` and `Retry-After: 60`.
 
 What the push service answers decides what you get back:
 
@@ -142,7 +142,7 @@ console.log('VAPID_PUBLIC_KEY='+Buffer.concat([Buffer.from([4]),Buffer.from(k.x,
 
 The tests make their own throwaway pair on every run, so they need no key.
 
-**Trying it with a real browser** (the app has no push UI yet): on the live site's tab, in the browser console, with `W` set to this Worker's URL:
+**Trying it with a real browser.** The app's Settings has an **Enable background alerts** button and a **Send test notification** button that do all of this. To do it by hand instead, on the app's tab, in the browser console, with `W` set to this Worker's URL:
 
 ```js
 const reg = await navigator.serviceWorker.ready
@@ -152,7 +152,7 @@ const account = await (await fetch(W + '/subscribe', { method: 'POST', headers: 
 await fetch(W + '/test-push', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(account) })
 ```
 
-`200` means the push service accepted the message. Nothing will be displayed until the service worker handles `push` events.
+`200` means the push service accepted the message, and the app's service worker then shows it.
 
 ### Cost of sending
 
@@ -184,7 +184,7 @@ Two cron triggers in `wrangler.jsonc` start it: **every minute** (send what is d
    Each alert is deleted (or its `attempts` raised) straight after its own push, not all together at the end. The rows written are the same, but a run that is cut off (CPU limit) keeps what it got done instead of sending the same alerts again every minute. If the push keys are missing or don't match, nothing is pushed and **no alert is counted against**: that isn't the alerts' fault (they are logged as `skipped`, and the daily smoke test is what catches it).
 4. If more are due than the batch allows, the rest **carry over** to the next run. An alert is tried at most 3 times, and sooner than that only if it gets 10 minutes late first.
 
-**Never twice.** Every alert has a tag, `alert-<id>` (ids are never reused), sent in the payload as `tag` and as the push's `Topic` header. The push service replaces a still-queued message with the same topic, so a retry of a push that did get through can't leave two waiting, and the tag lets the service worker show each alert once on the device. The web app's service worker doesn't use `tag` yet; it will need to pass it to `showNotification`. The push also tells the push service to drop the message when it would be more than 10 minutes late (`TTL` is what's left of that time) and marks it urgent.
+**Never twice.** Every alert has a tag, `alert-<id>` (ids are never reused), sent in the payload as `tag` and as the push's `Topic` header. The push service replaces a still-queued message with the same topic, so a retry of a push that did get through can't leave two waiting, and the tag lets the service worker show each alert once on the device: the app's service worker passes it to `showNotification`. The push also tells the push service to drop the message when it would be more than 10 minutes late (`TTL` is what's left of that time) and marks it urgent.
 
 Delivery is **at least once**, not exactly once: if a run is cut off between a push and its delete, the alert goes out again the next minute. That is what the tag and topic are for.
 
@@ -238,7 +238,8 @@ A run sends at most **3 pushes** (`MAX_PUSHES_PER_RUN` in `wrangler.jsonc`; any 
 - **Failing subscriptions can still use up the slots, for a while.** One failing subscription no longer holds anyone up (see [Fair retries](#fair-retries)), but a failing subscription still gets one push per run for each of its never-tried alerts, ahead of other subscriptions' alerts that are newer. So if as many subscriptions are failing as the batch has slots (3 by default, or 1 if you set it to 1), they can fill every slot of a run until each of their alerts has been tried once, which takes a few runs. The realistic cause is one push service going down (say all Google FCM subscriptions failing while Apple and Mozilla ones are fine). The fix would be to remember that a subscription is failing and rank its never-tried alerts after healthy subscriptions' (a column on the subscription, or the `attempts` of its other alerts); it isn't done because the rule you asked for ranks only by first attempt versus retry.
 - **A push service outage longer than about 3 minutes drops alerts.** Every failed push counts against an alert, whoever's fault it was, so an alert that gets three failures in a row during an outage is deleted. That is the same alert that would have been up to 3 minutes late and, a few minutes after, 10 minutes late anyway.
 - **No scheduling while D1 is out of its daily budget:** every run fails until 00:00 UTC (see [If the limit is hit](#if-the-limit-is-hit)).
-- **Not yet verified on Cloudflare:** the CPU numbers above, and a real push delivered by the scheduler to a real device.
+- **Delivery, verified by hand on the production setup (October 2026):** a test push and a real scheduled alert from the scheduler arrived on a locked iPhone (Home Screen app), and a test push arrived on desktop Chrome.
+- **Not yet verified on Cloudflare:** the CPU numbers above.
 
 ### Trying it locally
 
