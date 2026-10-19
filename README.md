@@ -117,7 +117,7 @@ One subscription whose pushes keep failing must not hold up everyone else. Each 
 Web Push needs RFC 8291 message encryption and RFC 8292 VAPID signing. Both are implemented directly on the Workers runtime's Web Crypto, with no dependency. The test suite reproduces the RFC 8291 appendix A example byte for byte, and the output was also reproduced with `http_ece`, the RFC author's reference implementation, when the tests were written. The Worker only sends to the known push-service hosts and never follows redirects, so `/subscribe` can't be used to make it call arbitrary servers.
 
 ### Official data instead of a third-party calendar
-News dates come from the published BLS (CPI, Employment Situation, PPI) and Federal Reserve (FOMC) schedules, USD events only, entered by hand in [`src/config/newsEvents.ts`](src/config/newsEvents.ts). A third-party calendar was considered and rejected after reviewing its terms; the app only links to ForexFactory's public calendar and fetches nothing from it. **Cost:** the data has to be extended by hand. A test fails once today is within 60 days of the end of the data (currently 2027-12-31).
+News dates come from the published BLS (CPI, Employment Situation, PPI) and Federal Reserve (FOMC) schedules, USD events only, entered by hand in [`src/config/newsEvents.ts`](src/config/newsEvents.ts). A third-party calendar (ForexFactory) was rejected after reading its published copyright notice, which prohibits redistributing its calendar data. The app only links to ForexFactory's public calendar and fetches nothing from it. **Cost:** the data has to be extended by hand. A test fails once today is within 60 days of the end of the data (currently 2027-12-31).
 
 ### Accepted risks
 - **Free-plan throughput is the ceiling.** A scheduler run sends at most 3 pushes (`MAX_PUSHES_PER_RUN`, 1 to 20), so about 180 an hour and about 30 alerts falling due in the same minute before the rest are too late. Fine for a handful of users, not for hundreds who all want the same open alert. The CPU margin was measured in Node, not on Cloudflare.
@@ -130,6 +130,8 @@ News dates come from the published BLS (CPI, Employment Situation, PPI) and Fede
 |---|---|---|
 | **Pipeline** | Vercel hosts and deploys the app (configured in Vercel, outside this repository) | [`deploy-push-worker.yml`](.github/workflows/deploy-push-worker.yml) |
 | **Checks** | [`ci.yml`](.github/workflows/ci.yml) on every pull request and push to `main`: `tsc -b`, oxlint, tests, build | Same workflow, a parallel job: type check and tests in the Workers runtime |
+
+**Branch protection:** a ruleset on `main` requires a pull request and a passing CI check before anything can be merged, so a change only reaches `main` (and, for the Worker, production) after CI passes.
 
 **Worker deploys** run on a push to `main` that touches `push-worker/` (or by hand, `main` only), one at a time:
 1. Type check and tests again.
@@ -167,7 +169,8 @@ Run on 2026-10-19, all passing:
 - **Component tests** drive the UI with Testing Library: settings, window editing, alerts, the Background alerts section.
 - **Worker tests** cover validation, the diff and hash logic, rate limits, the daily cap, the scheduler, fair retries, the write budget (using D1's `rows_written`) and the push encryption.
 - **Mutation checks:** I deliberately break the logic that matters (boundaries, skips, hash checks, reset handling) and confirm a test fails. These are run by hand, not in CI.
-- **Real runtime checks:** the app and Worker have been exercised together in real Chromium (Playwright) against a local `wrangler dev` Worker. Delivery to real phones can't be automated; the manual checklist is in [docs/background-alerts-testing.md](docs/background-alerts-testing.md).
+- **Real runtime checks:** the app and Worker have been exercised together in real Chromium (Playwright) against a local `wrangler dev` Worker.
+- **Real-device delivery** can't be automated, so it was checked by hand on the production setup in October 2026: a test push and a real scheduled alert both arrived on a locked iPhone (Home Screen app), and a test push arrived on desktop Chrome. The checklist is in [docs/background-alerts-testing.md](docs/background-alerts-testing.md).
 
 ## Limitations
 
