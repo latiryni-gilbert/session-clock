@@ -1,48 +1,182 @@
 # Session Clock
 
 [![CI](https://github.com/latiryni-gilbert/session-clock/actions/workflows/ci.yml/badge.svg)](https://github.com/latiryni-gilbert/session-clock/actions/workflows/ci.yml)
+[![Deploy push worker](https://github.com/latiryni-gilbert/session-clock/actions/workflows/deploy-push-worker.yml/badge.svg)](https://github.com/latiryni-gilbert/session-clock/actions/workflows/deploy-push-worker.yml)
 
-A web app that shows which trading sessions are open right now, and when the next ones open, in your local time.
+An installable web app that shows which trading sessions are open right now, with alerts that reach your phone even when the app is closed.
 
 **Live: [sessionclock.vercel.app](https://sessionclock.vercel.app/)**
 
-![Session Clock showing a live clock, a 24-hour timeline and the session list](docs/screenshot.png)
+<p align="center">
+  <img src="docs/screenshot-desktop.png" alt="Session Clock on a desktop: a live clock, a 24-hour timeline with a CPI marker, and the session list with several sessions active" width="560">
+  &nbsp;
+  <img src="docs/screenshot-phone.png" alt="The same screen on a phone" width="220">
+</p>
+<p align="center"><sub>Taken with the clock frozen at 09:40 New York time on a CPI release day: five sessions are active and the CPI release is marked on the timeline.</sub></p>
+
+The project has two parts:
+
+| Part | What it is | Where |
+|---|---|---|
+| **Web app** | React + TypeScript single-page app and PWA | this folder, hosted on Vercel |
+| **Push worker** | Cloudflare Worker + D1 database that stores alert schedules and sends Web Push notifications | [`push-worker/`](push-worker/README.md), the detailed backend reference |
 
 ## Features
 
-- **Clock** with your detected time zone.
-- **24-hour timeline** for your local day, with a moving "now" line. Overnight sessions are split at midnight, and active sessions are brighter.
-- **Session list with live status:** "Active - ends in 1h 12m", "Opens in 3h 05m", or "Opens Sun 18:00" when the next open is more than a day away. Active sessions come first.
-- **NYSE holidays and early closes:** on a closed day the NYSE row says why ("Closed - Thanksgiving Day") and still shows the next open. Early closes (13:00 ET) get a tag and a marker on the timeline, and a note warns when tomorrow is a holiday or an early close.
-- **Presets:** Forex (Sydney, Tokyo, London, New York), NYSE regular hours, CME equity futures, and ICT killzones (Asian, London, New York AM, New York PM).
-- **Custom windows:** add, edit and delete your own, each with its own time zone, days and color. Show or hide any window or group.
-- **In-page alerts:** get a banner (and a quiet chime) 5, 15 or 30 minutes before a window opens. If the page was asleep, it catches up when you come back.
-- **US news events:** CPI, jobs report (NFP), PPI and FOMC rate decisions are marked on the timeline, and a "Next event" line under the clock counts down to the next one, with a link to the full calendar on ForexFactory. FOMC meetings that publish projections are noted. Switch it off, or get an alert 5, 15 or 30 minutes before, in the settings.
-- **Installable and offline:** install it like an app on your phone or computer. After the first visit it opens without a connection, and it asks before switching to a new version.
-- **Desktop notifications:** optional, and only asked for when you turn them on. They are sent when the tab is in the background.
-- **Background alerts (beta):** turn them on in Settings to get your session and news alerts as notifications even when the app is closed. See [Background alerts](#background-alerts-beta).
+- **Live clock and 24-hour timeline** in your time zone, with a moving "now" line. Overnight sessions are split at midnight.
+- **Session list with live status:** "Active - ends in 1h 12m", "Opens in 3h 05m". Active sessions come first.
+- **Presets:** Forex (Sydney, Tokyo, London, New York), NYSE regular hours, CME equity futures, ICT killzones. Add, edit and delete **custom windows** with their own zone, days and color.
+- **NYSE holidays and early closes** (through 2027): a closed day says why and still shows the next open.
+- **US news events** (CPI, jobs report, PPI, FOMC) on the timeline, with a "Next event" countdown.
+- **Alerts** 5, 15 or 30 minutes before a window opens or a news event: in-page banner and chime, optional desktop notification, and, in beta, **background alerts** delivered by Web Push when the app is closed.
+- **Installable and offline** (PWA). It asks before switching to a new version.
+- **Daylight saving handled per window:** each window is defined in its own home zone and converted for the specific date (Luxon).
 
-## News event data
+## Architecture
 
-News events come from the official BLS (CPI, Employment Situation, PPI) and Federal Reserve (FOMC) schedules, USD events only, entered through 2027 in `src/config/newsEvents.ts`. Times are New York time and are converted to yours. Nothing is fetched from ForexFactory; the link just opens its calendar in a new tab. A test fails when the data gets within 60 days of running out, as a reminder to add the next year.
+```mermaid
+flowchart LR
+  subgraph device["User's device"]
+    app["Web app / PWA<br/>React + TypeScript"]
+    sw["Service worker<br/>push + click handlers"]
+  end
+  vercel["Vercel<br/>static hosting"] -->|serves| app
 
-## Install it
+  subgraph cf["Cloudflare"]
+    worker["Worker<br/>HTTP API + scheduler"]
+    d1[("D1<br/>subscriptions, alerts")]
+    cron["Cron Trigger<br/>every minute"]
+  end
 
-Open **[sessionclock.vercel.app](https://sessionclock.vercel.app/)** first, then:
+  app -->|"POST /subscribe<br/>PUT /schedule"| worker
+  worker <-->|SQL| d1
+  cron -->|"scheduled run"| worker
 
-- **iPhone or iPad (Safari):** tap the Share button, choose **Add to Home Screen**, then **Add**. Use Safari for the most reliable result; other iPhone browsers may not offer it.
-- **Android (Chrome):** open the menu (⋮) and choose **Install app** (or **Add to Home screen**).
-- **Desktop (Chrome or Edge):** click the install icon at the right end of the address bar, or open the menu and choose **Install Session Clock**. Safari 17 or later on a Mac: **File > Add to Dock**.
+  subgraph push["Push services"]
+    apple["Apple"]
+    google["Google"]
+    mozilla["Mozilla"]
+    microsoft["Microsoft"]
+  end
 
-Once installed it opens in its own window without browser controls, and it keeps working offline. When a new version is released, a small "Update available" bar appears at the bottom; choose **Reload** to switch to it now, or dismiss it and the new version is used the next time you reopen the app.
+  worker -->|"encrypted Web Push<br/>(RFC 8291, VAPID)"| push
+  push -->|"push event"| sw
+  sw -->|"showNotification"| app
+```
 
-## Time zones and daylight saving
+One background alert, from setting it to seeing it:
 
-Every window is defined in its own home time zone (the London session is 08:00 to 17:00 London time) and converted to your browser's zone for the specific date, using Luxon. Daylight-saving changes in either place are therefore handled automatically, and a start time that falls in a spring-forward gap moves to the next valid time. A window that ends before it starts runs past midnight and belongs to the day it starts on.
+```mermaid
+sequenceDiagram
+  autonumber
+  participant App as Web app
+  participant W as Worker
+  participant DB as D1
+  participant Cron as Cron Trigger
+  participant PS as Push service
+  participant SW as Service worker (phone)
 
-## Tech stack
+  App->>App: Build schedule (next 14 days, holidays applied)
+  App->>App: Hash it, skip if unchanged
+  App->>W: PUT /schedule (id, secret, alerts)
+  W->>DB: Insert and delete only the difference
+  Note over Cron,W: every minute
+  Cron->>W: scheduled run
+  W->>DB: One query: alerts due now
+  W->>W: Encrypt payload (Web Crypto)
+  W->>PS: POST encrypted message (VAPID-signed)
+  W->>DB: Delete the alert
+  PS->>SW: push event
+  SW->>SW: showNotification(title, body, tag)
+```
 
-React, TypeScript, Vite, Tailwind CSS, Luxon, Vitest and Testing Library, a service worker via vite-plugin-pwa (Workbox, with its own push handler in `src/sw.ts`), a Cloudflare Worker for push (`push-worker/`), GitHub Actions (CI), and Vercel (hosting).
+Details of the API, scheduler and database are in the [push worker README](push-worker/README.md).
+
+## Key design decisions and trade-offs
+
+### The app computes the schedule; the server only asks "what's due now?"
+The app already knows how to turn windows, time zones, holidays, early closes and news dates into alert times, and it has the tests for that. It builds the next 14 days (at most 400 alerts, skipping anything due in the next 2 minutes) and uploads the list. The Worker never repeats that logic: each minute it runs one indexed query and pushes what it finds. That keeps one source of truth for what an alert is, and keeps the Worker's work small enough for the free plan's CPU limit (about 10 ms per run).
+**Cost:** the schedule is a snapshot. Alerts last about 2 weeks after the app was last opened, and a corrected holiday or news date only reaches a device on its next open.
+
+### D1 instead of KV
+"What is due now?" is a query on time. In a key-value store that means listing keys and filtering, in pages. In D1 it is a partial index on `fire_at` for unsent alerts, so a minute with nothing due costs one read query and no writes. D1 also gives atomic batches for the diff on upload and cascading deletes when a subscription goes away.
+
+### The write budget
+D1's free tier allows 100,000 rows written a day, and every index entry counts as a row, so an alert costs about 6 rows from creation to deletion. Several layers keep that in check:
+- **Hash and diff:** the Worker stores a hash of the last schedule. An unchanged upload writes nothing; a changed one deletes and inserts only the difference. The app also keeps its own hash and doesn't send unchanged schedules.
+- **Rate limits** (Workers Rate Limiting): 3 `/subscribe` a minute per IP, 10 `/schedule` a minute per IP, and 2 schedule-changing uploads a minute per subscription.
+- **Daily cap:** at most 400 alerts added plus removed per subscription per UTC day.
+- **Delete on send:** a sent alert is deleted straight away rather than marked and cleaned up later.
+
+By the [worked estimates](push-worker/README.md#write-budget) (assumptions listed there, not measurements), the budget supports on the order of 800 daily active users, and one misbehaving subscription costs at most about 2,000 rows a day.
+
+### Fair retries and head-of-line blocking
+One subscription whose pushes keep failing must not hold up everyone else. Each run ranks never-tried alerts before retries, stops pushing to a subscription for the rest of the run after one failure, looks at no more than 3 alerts per subscription, and deletes an alert after 3 failed attempts. Alerts more than 10 minutes late are dropped rather than sent, because a late session alert misleads. Every alert has a tag (`alert-<id>`, also sent as the push `Topic`), so a retry can't show twice on the device.
+
+### Push encryption on Web Crypto
+Web Push needs RFC 8291 message encryption and RFC 8292 VAPID signing. Both are implemented directly on the Workers runtime's Web Crypto, with no dependency. The test suite reproduces the RFC 8291 appendix A example byte for byte, and the output was also reproduced with `http_ece`, the RFC author's reference implementation, when the tests were written. The Worker only sends to the known push-service hosts and never follows redirects, so `/subscribe` can't be used to make it call arbitrary servers.
+
+### Official data instead of a third-party calendar
+News dates come from the published BLS (CPI, Employment Situation, PPI) and Federal Reserve (FOMC) schedules, USD events only, entered by hand in [`src/config/newsEvents.ts`](src/config/newsEvents.ts). A third-party calendar was considered and rejected after reviewing its terms; the app only links to ForexFactory's public calendar and fetches nothing from it. **Cost:** the data has to be extended by hand. A test fails once today is within 60 days of the end of the data (currently 2027-12-31).
+
+### Accepted risks
+- **Free-plan throughput is the ceiling.** A scheduler run sends at most 3 pushes (`MAX_PUSHES_PER_RUN`, 1 to 20), so about 180 an hour and about 30 alerts falling due in the same minute before the rest are too late. Fine for a handful of users, not for hundreds who all want the same open alert. The CPU margin was measured in Node, not on Cloudflare.
+- **Abuse limits slow an attacker, they don't stop one.** Subscribing needs no account. Rate limits and the daily cap make it take effort to use up the daily write budget, but a deliberate attacker with enough subscriptions still can. Then the service answers `503` until 00:00 UTC. A challenge on `/subscribe` or a paid plan would close it; neither is done.
+- **A push-service outage longer than about 3 minutes drops alerts**, since three failures delete an alert.
+
+## CI/CD and operations
+
+| | Web app | Push worker |
+|---|---|---|
+| **Pipeline** | Vercel hosts and deploys the app (configured in Vercel, outside this repository) | [`deploy-push-worker.yml`](.github/workflows/deploy-push-worker.yml) |
+| **Checks** | [`ci.yml`](.github/workflows/ci.yml) on every pull request and push to `main`: `tsc -b`, oxlint, tests, build | Same workflow, a parallel job: type check and tests in the Workers runtime |
+
+**Worker deploys** run on a push to `main` that touches `push-worker/` (or by hand, `main` only), one at a time:
+1. Type check and tests again.
+2. **Apply D1 migrations to the remote database first**, so new code never meets old tables.
+3. Deploy, passing the commit SHA as `GIT_COMMIT_SHA`.
+4. **Smoke test:** `/health` must report that exact commit and `pushConfigured: true` (a deploy succeeds even if the private key was never set, so this is the check that catches it).
+
+**Migrations follow expand-then-contract:** the old code keeps running until the deploy step, so a migration may only add things; removing or renaming happens in a later change. Applied migrations are never edited.
+
+**Secrets never live in code:**
+
+| Value | Where |
+|---|---|
+| `VAPID_PRIVATE_KEY` | Cloudflare Worker secret |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | GitHub Actions secrets |
+| `PUSH_WORKER_URL` (smoke-test target) | GitHub Actions repository variable |
+| `VITE_PUSH_WORKER_URL` (Worker address the app talks to) | build-time setting on Vercel; public by nature, and the feature is hidden without it |
+
+The VAPID public key is public by design and is in `wrangler.jsonc`. For local runs, a throwaway key pair goes in `.dev.vars`, which Git ignores.
+
+**Logs:** Workers Logs is on with invocation logs off, so request details and client addresses aren't recorded. The scheduler writes one counts-only line per run (`scheduler run: due=3 sent=1 ...`) and the Worker never logs endpoints, keys, secrets or notification text.
+
+## Testing
+
+Run on 2026-10-19, all passing:
+
+| Suite | Tests | Files | Runs in |
+|---|---|---|---|
+| Web app, logic (`*.test.ts`) | 630 | 32 | Node |
+| Web app, components (`*.test.tsx`) | 146 | 8 | jsdom, time zone pinned to America/New_York |
+| Push worker | 446 | 11 | the Workers runtime (Cloudflare's Vitest integration) with a real local D1 |
+| **Total** | **1,222** | **51** | |
+
+- **Logic tests** cover time zones and daylight saving, holidays, alert timing and catch-up, the schedule builder, upload triggers and response handling.
+- **Component tests** drive the UI with Testing Library: settings, window editing, alerts, the Background alerts section.
+- **Worker tests** cover validation, the diff and hash logic, rate limits, the daily cap, the scheduler, fair retries, the write budget (using D1's `rows_written`) and the push encryption.
+- **Mutation checks:** I deliberately break the logic that matters (boundaries, skips, hash checks, reset handling) and confirm a test fails. These are run by hand, not in CI.
+- **Real runtime checks:** the app and Worker have been exercised together in real Chromium (Playwright) against a local `wrangler dev` Worker. Delivery to real phones can't be automated; the manual checklist is in [docs/background-alerts-testing.md](docs/background-alerts-testing.md).
+
+## Limitations
+
+- **Without background alerts, alerts only work while the page is open.** With them, alerts are scheduled 14 days ahead from the last time the app was opened.
+- **Background alerts are beta.** They need a browser with push support; on iPhone the app must be added to the Home Screen first.
+- **Preset times are common conventions** and may differ from your source. Check them against your broker or exchange.
+- **NYSE holidays and early closes and news dates are included through 2027;** CME holiday hours are not modeled.
+- **Desktop notifications aren't available everywhere:** not on Android Chrome, and not on iPhone Safari outside a Home Screen app. In-page alerts still work there.
+- Settings and custom windows are saved in your browser only and don't sync between devices.
 
 ## Run it locally
 
@@ -52,60 +186,47 @@ You need Node 22 (see `.nvmrc`).
 git clone https://github.com/latiryni-gilbert/session-clock.git
 cd session-clock
 npm ci
-npm run dev
+npm run dev        # http://localhost:5173
 ```
 
-Then open the address Vite prints (usually http://localhost:5173).
+| Command | Does |
+|---|---|
+| `npm test` | run the tests once |
+| `npm run lint` | lint (oxlint) |
+| `npx tsc -b` | type check |
+| `npm run build` | production build into `dist/` |
 
-Other commands:
+**Background alerts** are hidden unless `VITE_PUSH_WORKER_URL` is set at build time (see `.env.example`). To try them locally, run the Worker with `wrangler dev` (see the [push worker README](push-worker/README.md#develop)), set `VITE_PUSH_WORKER_URL=http://localhost:8787` in `.env.local`, then `npm run build && npm run preview`: the service worker doesn't run in `npm run dev`. A step-by-step checklist for computers and phones is in [docs/background-alerts-testing.md](docs/background-alerts-testing.md).
 
-```bash
-npm test         # run the tests once
-npm run lint     # lint
-npx tsc -b       # type check
-npm run build    # production build into dist/
-```
+## Install it as an app
 
-## Background alerts (beta)
+Open **[sessionclock.vercel.app](https://sessionclock.vercel.app/)** first, then:
 
-Settings has a **Background alerts (beta)** section that uses Web Push, so your alerts can reach you when Session Clock is closed. It talks to the push Worker in [`push-worker/`](push-worker/README.md): the app uploads its alert schedule there and the Worker sends each notification at the right time.
+- **iPhone or iPad (Safari):** Share, **Add to Home Screen**, **Add**.
+- **Android (Chrome):** menu (⋮), **Install app** (or **Add to Home screen**).
+- **Desktop (Chrome or Edge):** the install icon at the right end of the address bar. Safari 17 or later on a Mac: **File > Add to Dock**.
 
-- **Enable background alerts** asks for notification permission, subscribes this browser, and registers it with the Worker. The Worker gives back an id and a secret, which are kept in this browser's local storage and never shown or logged.
-- **Send test notification** has the Worker push "Session Clock: Background alerts are working." to this device. It is limited to one a minute. If the Worker says the subscription is gone, the device is reset and you are offered **Enable** again.
-- **The schedule.** While background alerts are on, the app works out every alert you have set for the next 14 days (session windows and news events, with holidays applied and windows you turned off skipped) using the same logic and wording as the in-app banners ("London opens in 15 minutes"), and uploads it with `PUT /schedule`. Alerts due in the next 2 minutes are left out so they can't arrive already in the past. At most 400 alerts are sent; with more, the horizon is cut back to the last whole stretch that fits and Settings says so. Settings shows **Scheduled through <date>** (the last day fully covered).
-- **When it uploads:** when you turn background alerts on; when the app opens, if the schedule changed or the last upload is over 24 hours old; and about 5 seconds after you change alert settings or windows. A fingerprint of the last accepted schedule is kept on the device, and an unchanged schedule is not sent again.
-- **Responses:** `429` and `503` are retried after the `Retry-After` the Worker gives (while the app is open, and not before then if you reopen it). `401`, `410` and `422` mean the Worker no longer knows the device, so background alerts are reset exactly like the test button does: you are offered **Enable** again. Any other error is tried again the next time you open the app.
-- **No double notifications.** While background alerts are on and an uploaded schedule reaches the present, the in-app desktop notification is not shown (the push covers it). The banner and sound stay. If nothing has been uploaded (for example the server was unreachable), the in-app notification is still used, so an alert is never dropped.
-- **Alerts last about 2 weeks after you last open the app**, because the schedule only reaches 14 days ahead. Open Session Clock now and then; every open tops it up.
-- **Turn off** removes the device from the Worker, drops the browser's subscription and clears the saved id and secret.
-- When Settings opens it checks the real situation: if you blocked notifications in the browser, or the browser dropped the subscription, it says so instead of showing "on".
+It then opens in its own window and works offline. When a new version is released an "Update available" bar appears; choose **Reload** to switch now, or the new version is used the next time you reopen the app.
 
-**Configuration.** The section only appears when `VITE_PUSH_WORKER_URL` is set to the Worker's address, e.g. `https://session-clock-push.<your-subdomain>.workers.dev` (see `.env.example`). It is read when the app is **built**, so on Vercel add it under *Project > Settings > Environment Variables* (Production, and Preview if you want it there) and redeploy. Without it the feature is hidden and the app behaves exactly as before.
+## Tech stack
 
-**Testing it on a computer** (Chrome, Edge or Firefox; **not a private/incognito window**, where Chrome has no push):
+| | |
+|---|---|
+| App | React 19, TypeScript, Vite, Tailwind CSS v4, Luxon |
+| PWA | `vite-plugin-pwa` (Workbox, custom service worker in `src/sw.ts`) |
+| Push worker | Cloudflare Workers, D1, Workers Rate Limiting, Cron Triggers, Web Crypto |
+| Tests | Vitest, Testing Library, jsdom, Cloudflare's Vitest integration |
+| Tooling | oxlint, GitHub Actions, Vercel, `wrangler` |
 
-1. A service worker doesn't run in `npm run dev`, so use a build: put `VITE_PUSH_WORKER_URL=<the Worker's address>` in `.env.local`, then `npm run build && npm run preview` and open the address it prints (a local `wrangler dev` Worker at `http://localhost:8787` works too).
-2. Open **Settings > Background alerts (beta)** and press **Enable background alerts**. Choose **Allow** when the browser asks. The section changes to "on".
-3. Set an alert on a window (Settings > Alerts), reopen Settings and check it says **Scheduled through …**. Then press **Send test notification**. A "Session Clock" notification should appear within a few seconds, with the app icon. To see that it works without the page: press the button and straight away switch to another tab or app, or close the Session Clock tab. The notification should still arrive. Click it and it brings Session Clock to the front, or opens it.
-4. Press the button again straight away: it asks you to wait a minute.
-5. Check the edge cases: in the browser's site settings set Notifications to **Block**, reopen Settings and it says alerts stopped. Then **Allow** it again and enable again. **Turn off** returns it to the start.
-6. Your operating system can hide notifications (Focus or Do Not Disturb on macOS, Focus assist on Windows): check that if nothing appears.
+## Data sources
 
-**Testing it on an iPhone or iPad** (a real device on iOS or iPadOS 16.4 or later; push does not work in Safari tabs, and the simulator is not a reliable test):
+- **News events:** BLS release schedules (CPI, Employment Situation, PPI) and the Federal Reserve FOMC calendar, USD events only, times in New York time converted to yours. Check them against bls.gov and federalreserve.gov before relying on them.
+- **NYSE holidays and early closes:** the NYSE holiday and early-close schedule. Check it against nyse.com.
+- **Session times:** common conventions, not an official source.
 
-1. Open the live site in **Safari**. In Settings the section says to add Session Clock to your Home Screen first, and there is no Enable button yet. That is the expected behavior outside the Home Screen app.
-2. Tap Share, **Add to Home Screen**, **Add**. Then **open it from the new Home Screen icon**.
-3. Open **Settings > Background alerts (beta)** and tap **Enable background alerts**. iOS asks to allow notifications: tap **Allow**. (iOS only asks from a tap, which is why it isn't automatic.)
-4. Tap **Send test notification**. The notification appears at the top of the screen and in Notification Center. To check it works while the app isn't open, tap the button and then straight away lock the phone, go to the Home Screen, or swipe the app away: the notification should still arrive a few seconds later. Tap it and Session Clock opens.
-5. If nothing appears, check *iPhone Settings > Notifications > Sessions* (the app's Home Screen name) and any Focus mode.
+## License
 
-## Limitations
-
-- **Without background alerts, alerts only work while the page is open.** With them on, alerts are scheduled 14 days ahead from the last time the app was opened, so a device not opened for about 2 weeks goes quiet until it is. The schedule is a snapshot: if a holiday calendar or news date is corrected in an app update, the corrected alerts are uploaded on the next open.
-- **Preset times are common conventions** and may differ from your source. Check them against your broker or exchange.
-- **NYSE holidays and early closes are included through 2027; CME holiday hours are not modeled yet.**
-- **Desktop notifications aren't available everywhere:** not on Android Chrome, and not on iPhone Safari outside a Home Screen app. In-page alerts still work there.
-- Settings and custom windows are saved in your browser only, so they don't sync between devices.
+[MIT](LICENSE) © 2026 LaTiryni Gilbert.
 
 ## Built with AI-assisted development
 
